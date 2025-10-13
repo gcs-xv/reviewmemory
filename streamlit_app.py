@@ -324,7 +324,7 @@ if tpl_key == "Kunjungan 1":
 
     konsul_flag = any(re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", t) for t in tindakan)
 
-    return "\n".join(lines), tindakan, konsul_flag
+        return "\n".join(lines), tindakan, konsul_flag
 
 # ===== PDF Parser =====
 
