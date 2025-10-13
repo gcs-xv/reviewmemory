@@ -948,7 +948,7 @@ if uploaded_bytes is not None:
             state["no"], rdict, state["visit"], per_date
         )
 
-        # signature input saat ini (dipakai untuk mendeteksi perubahan form)
+        # --- Signature dari form saat ini (dipakai untuk reset otomatis textarea) ---
         current_sig = (
             normalize_visit(state.get("visit","")),
             str(state.get("gigi","")).strip(),
@@ -956,33 +956,36 @@ if uploaded_bytes is not None:
             str(state.get("operator","")).strip(),
         )
 
-        # Selalu sinkronkan preview jika user belum mengedit manual
-        if state.get("block") is None:
-            state["block"] = default_block
+        # Kunci session_state untuk textarea pasien ini
+        ta_key = f"block_{patient_key}"
+
+        # Inisialisasi pertama atau reset jika form berubah:
+        if ta_key not in st.session_state:
+            st.session_state[ta_key] = default_block
         elif state.get("last_sig") != current_sig:
-            # Input form changed → always rebuild preview and reset manual flag
-            state["block"] = default_block
+            # Input form berubah → paksa preview ikut default terbaru
+            st.session_state[ta_key] = default_block
             state["manually_touched"] = False
 
-        # render textarea dan deteksi apakah user benar2 mengedit manual
-        old_text = state["block"]
+        # Render textarea TANPA value=..., cukup pakai key
         edited_text = st.text_area(
             "Blok preview (boleh revisi manual)",
-            value=old_text,
+            key=ta_key,
             height=220,
-            key=f"block_{patient_key}"
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # --- Auto-save & auto-update setiap kali ADA perubahan form/textarea ---
-        # Deteksi perubahan dibanding signature lama
-        state["manually_touched"] = state.get("manually_touched", False) or (edited_text != old_text)
-        state["block"] = edited_text
+        # --- Deteksi perubahan & Auto-save ---
+        prev_text = state.get("prev_block", "")
+        prev_sig  = state.get("prev_sig")
 
-        sig_before = state.get("last_sig")
-        changed = state["manually_touched"] or (sig_before != current_sig)
-        # Simpan signature terbaru untuk deteksi berikutnya
-        state["last_sig"] = current_sig
+        changed = (edited_text != prev_text) or (current_sig != prev_sig)
+
+        # Simpan ke state
+        state["block"]      = edited_text
+        state["prev_block"] = edited_text
+        state["prev_sig"]   = current_sig
+        state["last_sig"]   = current_sig
 
         if changed:
             try:
