@@ -148,6 +148,16 @@ def compute_kontrol_text(kontrol_tpl: str, diagnosa_text: str, base_date):
     md = re.search(r"\bPOD\s+([IVXLC]+)\b", diagnosa_text or "", flags=re.IGNORECASE)
     if not mk: return kontrol_tpl
 
+    # --- Auto-prefix "drg. " untuk operator (tanpa dobel kalau user sudah tulis dr./drg.) ---
+def _operator_prefixed(op_name: str) -> str:
+    s = (op_name or "").strip()
+    if not s:
+        return ""
+    # kalau sudah ada "drg." atau "Dr." biarkan sebagaimana adanya (hanya standarkan "drg." ke huruf kecil)
+    if re.match(r"(?i)\s*(dr\.?\s*)?drg\.", s) or re.match(r"(?i)^dr\.", s):
+        return re.sub(r'(?i)\bDRG\.', 'drg.', s)
+    return f"drg. {s}"
+
     pod_k = roman_to_int(mk.group(1))
     pod_d = roman_to_int(md.group(1)) if md else 0
 
@@ -184,20 +194,20 @@ LABELS = {
 
 VISIT_TEMPLATES = {
     "(Pilih)": dict(diagnosa="", tindakan=[], kontrol=""),
+    # Kunjungan 1: diagnosa kosong; tindakan Konsultasi + X-ray; kontrol H+7 (di-hit di builder)
     "Kunjungan 1": dict(
-        diagnosa="",  # sesuai instruksi: kosong
+        diagnosa="",
         tindakan=[
             "Konsultasi",
             "Periapikal X-ray gigi xx / OPG X-Ray",
         ],
-        kontrol="Pro ekstraksi gigi xx dalam lokal anestesi / Pro odontektomi gigi xx dalam lokal anestesi (xx/04/2025)",  # akan diubah jadi H+7
+        kontrol="Pro ekstraksi gigi xx dalam lokal anestesi / Pro odontektomi gigi xx dalam lokal anestesi (xx/04/2025)",
     ),
+    # Kunjungan 2: hilangkan opsi "penyulit/open methode"
     "Kunjungan 2": dict(
         diagnosa="Impaksi gigi xx kelas xx posisi xx Mesioangular / Gangren pulpa gigi xx / Gangren radiks gigi xx",
         tindakan=[
             "Odontektomi gigi xx dalam lokal anestesi",
-            # "ekstraksi gigi xx dengan penyulit dalam lokal anestesi",   # dihapus
-            # "ekstraksi gigi xx dengan open methode dalam lokal anestesi",
             "Ekstraksi gigi xx dalam lokal anestesi",
         ],
         kontrol="POD IV (xx/04/2025)",
@@ -236,17 +246,16 @@ def normalize_visit(text: str) -> str:
 def build_block_with_meta(no, row, visit_key, base_date):
     """
     Kunjungan 1:
-        - Diagnosa: kosong
-        - Tindakan: [Konsultasi, Periapikal X-ray gigi G / OPG X-Ray]
-        - Kontrol: Pro <ekstraksi|odontektomi> gigi G (H+7 dari hari ini)
+      - Diagnosa: (kosong)
+      - Tindakan: Konsultasi + Periapikal X-ray gigi G / OPG
+      - Kontrol : Pro <ekstraksi|odontektomi> gigi G (H+7 dari hari ini)
     Kunjungan 2:
-        - Impaksi(..8): Diagnosa Impaksi gigi G..., Tindakan Odontektomi gigi G
-        - Non-impaksi : Diagnosa Gangren...,       Tindakan Ekstraksi gigi G
-        - Kontrol POD IV via compute_kontrol_text(base PERIODE)
+      - Impaksi(..8): Diagnosa Impaksi..., Tindakan Odontektomi...
+      - Non-impaksi : Diagnosa Gangren..., Tindakan Ekstraksi...
+      - Kontrol POD IV (base PERIODE)
     Kunjungan 3/4/5:
-        - Diagnosa = POD {III|VII|XIV} <Ekstraksi|Odontektomi> gigi G
-        - Tindakan sesuai template
-        - Kontrol sesuai template POD (base PERIODE)
+      - Diagnosa = POD {III|VII|XIV} {Ekstraksi|Odontektomi} gigi G
+      - Tindakan sesuai template; kontrol sesuai template (base PERIODE)
     """
     tpl_key = normalize_visit(visit_key or row.get("visit") or "(Pilih)")
     g_raw = (row.get("gigi") or "").strip()
@@ -257,10 +266,14 @@ def build_block_with_meta(no, row, visit_key, base_date):
 
     dpjp_full = _fix_drg_lower((row.get("DPJP (auto)") or "").strip())
     telp = (row.get("telp") or "").strip()
-    operator = (row.get("operator") or "").strip()
+    operator = _operator_prefixed((row.get("operator") or "").strip()) if (row.get("operator") or "").strip() else ""
 
     L = LABELS
     lines = []
+    # judul "Kunjungan X" di atas nomor
+    if tpl_key.lower().startswith("kunjungan"):
+        lines.append(tpl_key)
+
     lines.append(f"{no}. {L['nama']}{row['Nama']}")
     lines.append(f"{L['tgl']}{row['Tgl Lahir']}")
     lines.append(f"{L['rm']}{fmt_rm(row['No. RM'])}")
@@ -270,13 +283,13 @@ def build_block_with_meta(no, row, visit_key, base_date):
     kontrol_txt = ""
 
     if tpl_key == "Kunjungan 1":
+        # diagnosa kosong, tindakan konsultasi + xray, kontrol H+7 dari HARI INI
         diagnosa_txt = ""
         tindakan_list = [
             "Konsultasi",
             f"Periapikal X-ray gigi {tooth} / OPG X-Ray",
         ]
         hplus = (date.today() + timedelta(days=7)).strftime("%d/%m/%Y")
-        # gunakan kata kerja kecil pada 'pro ekstraksi/odontektomi' sesuai contoh kamu
         op_lower = "odontektomi" if imp else "ekstraksi"
         kontrol_txt = f"Pro {op_lower} gigi {tooth} dalam lokal anestesi ({hplus})"
 
@@ -305,7 +318,7 @@ def build_block_with_meta(no, row, visit_key, base_date):
         kontrol_txt = "-"
 
     else:
-        # fallback: pakai template dasar + filter
+        # fallback ke template + filter impaksi utk non-8
         tpl = VISIT_TEMPLATES.get(tpl_key, VISIT_TEMPLATES["(Pilih)"])
         diagnosa = replace_gigi(tpl["diagnosa"], tooth)
         tlist = [replace_gigi(t, tooth) for t in tpl["tindakan"]]
@@ -317,6 +330,7 @@ def build_block_with_meta(no, row, visit_key, base_date):
 
     lines.append(f"{L['diag']}{diagnosa_txt}")
 
+    # Kunjungan 3: tindakan satu baris tanpa bullet
     if tpl_key == "Kunjungan 3" and len(tindakan_list) == 1:
         lines.append(f"{L['tind']}{tindakan_list[0]}")
     else:
@@ -330,9 +344,7 @@ def build_block_with_meta(no, row, visit_key, base_date):
     lines.append(f"{L['opr']}{operator}")
 
     konsul_flag = any(re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", t) for t in tindakan_list)
-
     return "\n".join(lines), tindakan_list, konsul_flag
-
 # =========================================================
 # Parser PDF (tetap)
 # =========================================================
@@ -522,6 +534,15 @@ if uploaded is not None:
             with v4:
                 state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
 
+        # auto-reviewed bila kunjungan valid + gigi terisi + (telp atau operator)
+        auto_ok = (
+            str(state["visit"]).lower().startswith("kunjungan")
+            and str(state["gigi"]).strip() != ""
+            and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
+        )
+        if auto_ok and not state["reviewed"]:
+            state["reviewed"] = True
+    
             # build default block (berdasarkan state terkini)
             rdict = {
                 "Nama": state["name"],
