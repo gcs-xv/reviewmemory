@@ -143,22 +143,43 @@ def filter_for_tooth(diagnosa: str, tindakan: list[str], kontrol: str, gigi: str
     return diagnosa, tindakan, kontrol
 
 def compute_kontrol_text(kontrol_tpl: str, diagnosa_text: str, base_date):
-    if not base_date: return kontrol_tpl
+    if not base_date:
+        return kontrol_tpl
+
     mk = re.search(r"\bPOD\s+([IVXLC]+)\b", kontrol_tpl, flags=re.IGNORECASE)
     md = re.search(r"\bPOD\s+([IVXLC]+)\b", diagnosa_text or "", flags=re.IGNORECASE)
-    if not mk: return kontrol_tpl
+    if not mk:
+        return kontrol_tpl
+
+    pod_k = roman_to_int(mk.group(1))
+    pod_d = roman_to_int(md.group(1)) if md else 0
+
+    offset = pod_k - pod_d
+    if offset < 0:
+        offset = 0
+    target = base_date + timedelta(days=offset)
+
+    # kalau target POD III jatuh Minggu → geser ke POD IV (senin)
+    if pod_k == 3 and target.weekday() == 6:  # Sunday
+        pod_k = 4
+        target = target + timedelta(days=1)
+        kontrol_tpl = re.sub(r"\bPOD\s+[IVXLC]+\b", "POD IV", kontrol_tpl, flags=re.IGNORECASE)
+
+    date_str = target.strftime("%d/%m/%Y")
+    if re.search(r"\([^)]*\)", kontrol_tpl):
+        return re.sub(r"\([^)]*\)", f"({date_str})", kontrol_tpl)
+    else:
+        return f"{kontrol_tpl} ({date_str})"
+
 
 # --- Auto-prefix "drg. " untuk operator (tanpa dobel kalau user sudah tulis dr./drg.) ---
 def _operator_prefixed(op_name: str) -> str:
     s = (op_name or "").strip()
     if not s:
         return ""
-    # kalau user sudah tulis drg. atau Dr. biarkan (standarkan drg. jadi huruf kecil)
     if re.match(r"(?i)\s*(dr\.?\s*)?drg\.", s) or re.match(r"(?i)^dr\.", s):
         return re.sub(r'(?i)\bDRG\.', 'drg.', s)
     return f"drg. {s}"
-    pod_k = roman_to_int(mk.group(1))
-    pod_d = roman_to_int(md.group(1)) if md else 0
 
     offset = pod_k - pod_d
     if offset < 0: offset = 0
@@ -499,6 +520,7 @@ for _, r in df.iterrows():
     state = st.session_state.per_patient[rm]
 
     # header identitas
+    st.markdown(f'<div style="background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px">', unsafe_allow_html=True)
     st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
     st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
 
