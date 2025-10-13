@@ -581,11 +581,12 @@ def _compute_rows_to_save(all_rows, reviewer_name):
         st_state = st.session_state.per_patient.get(rm_key)
         if not st_state:
             continue
+        block_nonempty = bool((st_state.get("block") or "").strip())
         reviewed_ok = (
-    	str(st_state.get("visit","")).lower().startswith("kunjungan")
-    	and (str(st_state.get("telp","")).strip() != "" or str(st_state.get("operator","")).strip() != "")
+            str(st_state.get("visit","")).lower().startswith("kunjungan")
+            and (str(st_state.get("telp","")).strip() != "" or str(st_state.get("operator","")).strip() != "")
         )
-        if reviewed_ok and (st_state.get("block") or "").strip():
+        if block_nonempty:
             rows_to_save.append({
                 "rm": rm_key,
                 "checked": True,
@@ -701,7 +702,7 @@ if uploaded_bytes is not None:
                             "telp": saved.get("telp") or "",
                             "operator": saved.get("operator") or "",
                             "block": saved.get("block_text") or "",
-                            "manually_touched": False,
+                            "manually_touched": True,
                             "name": "",
                             "dob": "",
                             "dpjp_auto": "",
@@ -718,7 +719,7 @@ if uploaded_bytes is not None:
                     st_state["operator"] = saved.get("operator") or st_state.get("operator") or ""
                     if saved.get("block_text"):
                         st_state["block"] = saved["block_text"]
-                    st_state["manually_touched"] = False
+                    st_state["manually_touched"] = True
                     st_state["last_sig"] = None
                     st_state["db_updated_at"] = str(saved.get("updated_at") or "")
                     pulled += 1
@@ -737,7 +738,7 @@ if uploaded_bytes is not None:
                 _combined = []
                 _konsul = 0
                 for _rm, _st in st.session_state.per_patient.items():
-                    if _st.get("block") and str(_st.get("visit","")).lower().startswith("kunjungan") and str(_st.get("gigi","")).strip() and (str(_st.get("telp","")).strip() or str(_st.get("operator","")).strip()):
+                    if (_st.get("block") or "").strip():
                         _combined.append(_st["block"])
                         if re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", _st["block"]):
                             _konsul += 1
@@ -1002,10 +1003,10 @@ if uploaded_bytes is not None:
             try:
                 payload = _compute_rows_to_save(rows, st.session_state.get("reviewer"))
                 upsert_reviews(supabase, per_str_db, uploaded_name, payload)
-                # build summary text dari blok-blok yang reviewed saat ini
+                # build summary text dari blok-blok yang non-empty saat ini
                 _combined = []
                 for _rm, _st in st.session_state.per_patient.items():
-                    if _st.get("block") and str(_st.get("visit","")).lower().startswith("kunjungan") and str(_st.get("gigi","")).strip() and (str(_st.get("telp","")).strip() or str(_st.get("operator","")).strip()):
+                    if (_st.get("block") or "").strip():
                         _combined.append(_st["block"])
                 summary_text = "\n\n".join(_combined)
                 upsert_summary(supabase, per_str_db, summary_text)
@@ -1149,4 +1150,3 @@ elif uploaded_bytes is None:
                     "<div style='margin-top:6px;color:#555'>✅ Setelah mengisi, <b>Simpan (blok &amp; rekap harian)</b> atau biarkan auto-save bekerja. Untuk melihat perubahan rekan, gunakan <b>Update</b> atau aktifkan <b>Auto-update berkala</b>.</div>",
                     unsafe_allow_html=True
                 )
-			
