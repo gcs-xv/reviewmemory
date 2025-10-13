@@ -693,48 +693,10 @@ if uploaded_bytes is not None:
         st.markdown("## ⚙️ Aksi")
 
         # --- 1) UPDATE di paling atas ---
-        if st.button("🔄 Update (ambil dari Supabase)", key="sb_pull", use_container_width=True):
-            try:
-                latest_map = load_review_map(supabase, per_str_db)
-                pulled = 0
-                for rm_k, saved in latest_map.items():
-                    st_state = st.session_state.per_patient.get(str(rm_k))
-                    if not st_state:
-                        st.session_state.per_patient[str(rm_k)] = {
-                            "visit": normalize_visit(saved.get("visit") or "(Pilih)"),
-                            "gigi": saved.get("gigi") or "",
-                            "telp": saved.get("telp") or "",
-                            "operator": saved.get("operator") or "",
-                            "block": saved.get("block_text") or "",
-                            "manually_touched": True,
-                            "name": "",
-                            "dob": "",
-                            "dpjp_auto": "",
-                            "no": 0,
-                            "last_sig": None,
-                            "db_updated_at": str(saved.get("updated_at") or "")
-                        }
-                        st.session_state.per_patient[str(rm_k)]["force_load_from_db"] = True
-                        st.session_state.per_patient[str(rm_k)]["manually_touched"] = True
-                        pulled += 1
-                        continue
-
-                    st_state["visit"] = normalize_visit(saved.get("visit") or st_state.get("visit") or "(Pilih)")
-                    st_state["gigi"] = saved.get("gigi") or st_state.get("gigi") or ""
-                    st_state["telp"] = saved.get("telp") or st_state.get("telp") or ""
-                    st_state["operator"] = saved.get("operator") or st_state.get("operator") or ""
-                    if saved.get("block_text"):
-                        st_state["block"] = saved["block_text"]
-                        st_state["force_load_from_db"] = True
-                    st_state["manually_touched"] = True
-                    st_state["last_sig"] = None
-                    st_state["db_updated_at"] = str(saved.get("updated_at") or "")
-                    pulled += 1
-
-                st.success(f"Update selesai. {pulled} pasien disinkron dari Supabase.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Gagal update dari Supabase: {e}")
+        if st.button("🔄 Update (ambil dari Supabase)", use_container_width=True):
+            # Set a flag and rerun; the top-of-loop fetch will pick latest from Supabase
+            st.session_state["_force_update"] = True
+            st.rerun()
 
         # --- 2) SIMPAN setelah UPDATE ---
         if st.button("💾 Simpan (blok & rekap harian)", key="sb_save_all", use_container_width=True, type="primary"):
@@ -871,6 +833,7 @@ if uploaded_bytes is not None:
         patient_key = f"{rm}_{state['no']}"
         state.setdefault("last_sig", None)
         state.setdefault("manually_touched", False)
+        state.setdefault("last_auto_block", None)
 
         # Anchor id untuk fitur "jump" (RM and running number)
 
@@ -978,21 +941,31 @@ if uploaded_bytes is not None:
             if saved_text:
                 st.session_state[ta_key] = saved_text
                 state["block"] = saved_text
+                state["manually_touched"] = True
+                state["last_auto_block"] = None
             state["force_load_from_db"] = False
             # Tambahkan marker agar tidak trigger manual touched pada rerun ini
             state["_just_injected"] = True
 
-        # Prefer DB-saved text if available; pada init pertama, pakai DB jika ada, kalau tidak pakai default terbaru
-        saved_db = review_map.get(rm, {})
-        saved_text = (saved_db.get("block_text") or "").strip()
-
         if ta_key not in st.session_state:
-            # Pada init pertama, pakai teks dari DB jika ada; kalau tidak, pakai default terbaru
-            st.session_state[ta_key] = saved_text if saved_text else default_block
-        elif state.get("last_sig") != current_sig:
-            if not state.get("manually_touched", False):
-                # Ketika input Kunjungan/Gigi/Telp/Operator berubah, rebuild dari default terbaru
+            if saved_text:
+                # init dari DB -> anggap manual (jangan overwrite pas form berubah)
+                st.session_state[ta_key] = saved_text
+                state["manually_touched"] = True
+                state["last_auto_block"] = None
+            else:
+                # init dari auto template
                 st.session_state[ta_key] = default_block
+                state["manually_touched"] = False
+                state["last_auto_block"] = default_block
+        elif state.get("last_sig") != current_sig:
+            # form berubah -> overwrite HANYA jika textarea masih sama dengan auto block sebelumnya
+            current_text = st.session_state.get(ta_key, "")
+            if current_text == (state.get("last_auto_block") or ""):
+                st.session_state[ta_key] = default_block
+                state["last_auto_block"] = default_block
+                state["manually_touched"] = False
+            # kalau sudah beda (berarti user pernah edit manual), biarkan apa adanya
 
         # Simpan nilai sebelumnya sebelum render textarea
         prev_text_value = st.session_state.get(ta_key)
@@ -1010,6 +983,10 @@ if uploaded_bytes is not None:
             state["manually_touched"] = True
         # Bersihkan marker just_injected setelah textarea dirender
         state["_just_injected"] = False
+
+        if edited_text == default_block:
+            state["last_auto_block"] = default_block
+
         st.markdown("</div>", unsafe_allow_html=True)
 
         # --- Deteksi perubahan & Auto-save ---
@@ -1025,6 +1002,9 @@ if uploaded_bytes is not None:
         state["prev_sig"]   = current_sig
         state["last_sig"]   = current_sig
         state["force_load_from_db"] = False
+
+        if not state.get("manually_touched", False) and state.get("last_auto_block") is None:
+            state["last_auto_block"] = edited_text
 
         if changed:
             try:
