@@ -1,3 +1,4 @@
+# streamlit_app.py
 import io
 import re
 from datetime import date, timedelta
@@ -6,11 +7,15 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 from docx import Document
-from supabase import create_client
 
+# =========================================================
+# Page
+# =========================================================
 st.set_page_config(page_title="Review Pasien — Streamlit", page_icon="🦷", layout="wide")
 
-# ===== DPJP Canon =====
+# =========================================================
+# DPJP Canon + Fuzzy Matching (tetap)
+# =========================================================
 DPJP_CANON = [
     "Dr. drg. Andi Tajrin, M.Kes., Sp.B.M.M., Subsp. C.O.M.(K)",
     "drg. Mukhtar Nur Anam, Sp.B.M.M.",
@@ -26,7 +31,6 @@ DPJP_CANON = [
     "drg. Yossy Yoanita Ariestiana, M.KG., Sp.B.M.M., Subsp.Ortognat-D (K)",
 ]
 
-# ===== Fuzzy DPJP =====
 STOP_TOKENS = {
     "DR", "DRG", "SP", "B", "M", "K",
     "BMM", "MARS", "MKES", "MKG", "PHD",
@@ -34,8 +38,7 @@ STOP_TOKENS = {
 }
 
 def _norm_doctor(s: str) -> str:
-    if not s:
-        return ""
+    if not s: return ""
     s = s.replace("drg..", "drg.")
     s = re.sub(r"Sp\.\s*BM\b", "Sp.BM", s, flags=re.IGNORECASE)
     s = re.sub(r"Sp\.BM\(?K\)?",  "Sp.BMM", s, flags=re.IGNORECASE)
@@ -51,8 +54,7 @@ def _tokens(s: str) -> set[str]:
 
 def _score_doctor(raw: str, canon: str):
     ta, tb = _tokens(raw), _tokens(canon)
-    if not ta or not tb:
-        return 0.0, 0
+    if not ta or not tb: return 0.0, 0
     na, nb = ta - STOP_TOKENS, tb - STOP_TOKENS
     inter_n = na & nb
     sn = (len(inter_n) / len(na | nb)) if (na and nb) else 0.0
@@ -63,19 +65,18 @@ def map_doctor_to_canonical(raw: str, candidates=DPJP_CANON, threshold: float = 
     best, best_score = "", 0.0
     for c in candidates:
         sc, inter_name_cnt = _score_doctor(raw, c)
-        if inter_name_cnt == 0:
-            continue
+        if inter_name_cnt == 0: continue
         if sc > best_score:
             best, best_score = c, sc
     return best if best_score >= threshold else ""
 
-# --- NEW: paksa 'drg.' selalu huruf kecil tanpa mengubah 'Dr.' ---
 def _fix_drg_lower(s: str) -> str:
-    if not s:
-        return s
+    if not s: return s
     return re.sub(r'(?i)\bDRG\.', 'drg.', s)
 
-# ===== Helpers =====
+# =========================================================
+# Helpers (tetap)
+# =========================================================
 ID_MONTHS = {
     "JANUARI": 1, "FEBRUARI": 2, "MARET": 3, "APRIL": 4, "MEI": 5, "JUNI": 6,
     "JULI": 7, "AGUSTUS": 8, "SEPTEMBER": 9, "OKTOBER": 10, "NOVEMBER": 11, "DESEMBER": 12
@@ -112,23 +113,18 @@ def extract_period_date_from_text(text: str):
         return None
 
 def replace_gigi(text: str, gigi: str | None) -> str:
-    if not (gigi and str(gigi).strip()):
-        return text
+    if not (gigi and str(gigi).strip()): return text
     gigi_val = str(gigi).strip()
-    # penting: gunakan \b asli + lambda agar \1 tetap capture group
+    # Hindari PatternError: gunakan lambda agar \1 tidak bentrok dengan angka gigi
     return re.sub(r"(?i)(\bgigi\s*)xx\b", lambda m: m.group(1) + gigi_val, text)
-    
-# ======= Logika impaksi/odontektomi hanya untuk gigi berakhiran 8 =======
 
 def is_impaksi_tooth(gigi: str | None) -> bool:
-    if not gigi:
-        return False
+    if not gigi: return False
     s = re.sub(r"\D", "", str(gigi))
     return bool(re.fullmatch(r"\d{2}", s)) and s.endswith("8")
 
 def _clean_slash_choices(txt: str, rm_impaksi_odonto: bool) -> str:
-    if not txt:
-        return txt
+    if not txt: return txt
     parts = [p.strip() for p in re.split(r"\s*/\s*", txt)]
     if rm_impaksi_odonto:
         parts = [p for p in parts if not re.search(r"(?i)\bimpaksi\b|\bodontektomi\b", p)]
@@ -145,7 +141,6 @@ def filter_for_tooth(diagnosa: str, tindakan: list[str], kontrol: str, gigi: str
             if not re.search(r"(?i)\bodontektomi\b|\bopen\s+methode\b", t)
         ]
     return diagnosa, tindakan, kontrol
-
 
 def compute_kontrol_text(kontrol_tpl: str, diagnosa_text: str, base_date):
     if not base_date: return kontrol_tpl
@@ -171,7 +166,9 @@ def compute_kontrol_text(kontrol_tpl: str, diagnosa_text: str, base_date):
     else:
         return f"{kontrol_tpl} ({date_str})"
 
-# ===== Templates =====
+# =========================================================
+# Template dasar (dipakai fallback)
+# =========================================================
 B = "•⁠  ⁠"
 LABELS = {
     "nama": "Nama            : ",
@@ -184,25 +181,26 @@ LABELS = {
     "telp": f"{B}No. Telp.         : ",
     "opr":  f"{B}Operator         : ",
 }
+
 VISIT_TEMPLATES = {
     "(Pilih)": dict(diagnosa="", tindakan=[], kontrol=""),
     "Kunjungan 1": dict(
-        diagnosa="Gangren pulpa gigi xx / Gangren radiks gigi xx",
+        diagnosa="",  # sesuai instruksi: kosong
         tindakan=[
-            "Ekstraksi gigi xx dalam lokal anestesi",
+            "Konsultasi",
             "Periapikal X-ray gigi xx / OPG X-Ray",
-            "Odontektomi gigi xx dalam lokal anestesi",
         ],
-        kontrol="POD III (xx/04/2025)",
+        kontrol="Pro ekstraksi gigi xx dalam lokal anestesi / Pro odontektomi gigi xx dalam lokal anestesi (xx/04/2025)",  # akan diubah jadi H+7
     ),
     "Kunjungan 2": dict(
         diagnosa="Impaksi gigi xx kelas xx posisi xx Mesioangular / Gangren pulpa gigi xx / Gangren radiks gigi xx",
         tindakan=[
             "Odontektomi gigi xx dalam lokal anestesi",
-            "ekstraksi gigi xx dengan penyulit dalam lokal anestesi",
-            "ekstraksi gigi xx dengan open methode dalam lokal anestesi",
+            # "ekstraksi gigi xx dengan penyulit dalam lokal anestesi",   # dihapus
+            # "ekstraksi gigi xx dengan open methode dalam lokal anestesi",
+            "Ekstraksi gigi xx dalam lokal anestesi",
         ],
-        kontrol="POD III (xx/04/2025)",
+        kontrol="POD IV (xx/04/2025)",
     ),
     "Kunjungan 3": dict(
         diagnosa="POD III Ekstraksi gigi xx dalam lokal anestesi / POD III Odontektomi gigi xx dalam lokal anestesi",
@@ -232,53 +230,30 @@ def normalize_visit(text: str) -> str:
             return k
     return t
 
-# ===== Shared storage (Supabase) =====
-@st.cache_resource
-def get_supabase():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_ANON_KEY"]
-    return create_client(url, key)
-
-def load_review_map(supabase, periode_date: str | None):
-    if not periode_date:
-        return {}
-    data = (
-        supabase
-        .table("reviews")
-        .select("rm, checked, reviewed_by, updated_at")
-        .eq("periode_date", periode_date)
-        .execute()
-        .data or []
-    )
-    return {row["rm"]: row for row in data}
-
-def upsert_reviews(supabase, periode_date: str, rows_to_upsert):
-    payload = []
-    for r in rows_to_upsert:
-        payload.append({
-            "periode_date": periode_date,
-            "rm": str(r["rm"]),
-            "checked": bool(r["checked"]),
-            "reviewed_by": r.get("reviewed_by"),
-        })
-    if payload:
-        supabase.table("reviews").upsert(payload, on_conflict="periode_date,rm").execute()
-
-# ===== Block builder (with meta) =====
-
+# =========================================================
+# Block Builder — logika baru impaksi / non-impaksi
+# =========================================================
 def build_block_with_meta(no, row, visit_key, base_date):
+    """
+    Kunjungan 1:
+        - Diagnosa: kosong
+        - Tindakan: [Konsultasi, Periapikal X-ray gigi G / OPG X-Ray]
+        - Kontrol: Pro <ekstraksi|odontektomi> gigi G (H+7 dari hari ini)
+    Kunjungan 2:
+        - Impaksi(..8): Diagnosa Impaksi gigi G..., Tindakan Odontektomi gigi G
+        - Non-impaksi : Diagnosa Gangren...,       Tindakan Ekstraksi gigi G
+        - Kontrol POD IV via compute_kontrol_text(base PERIODE)
+    Kunjungan 3/4/5:
+        - Diagnosa = POD {III|VII|XIV} <Ekstraksi|Odontektomi> gigi G
+        - Tindakan sesuai template
+        - Kontrol sesuai template POD (base PERIODE)
+    """
     tpl_key = normalize_visit(visit_key or row.get("visit") or "(Pilih)")
-    tpl = VISIT_TEMPLATES.get(tpl_key, VISIT_TEMPLATES["(Pilih)"])
-    diagnosa = tpl["diagnosa"]
-    tindakan = list(tpl["tindakan"])
-    kontrol  = tpl["kontrol"]
-
-    gigi = (row.get("gigi") or "").strip()
-    diagnosa = replace_gigi(diagnosa, gigi)
-    tindakan = [replace_gigi(t, gigi) for t in tindakan]
-    kontrol  = replace_gigi(kontrol,  gigi)
-    diagnosa, tindakan, kontrol = filter_for_tooth(diagnosa, tindakan, kontrol, gigi)
-    kontrol = compute_kontrol_text(kontrol, diagnosa, base_date)
+    g_raw = (row.get("gigi") or "").strip()
+    g_clean = re.sub(r"\D", "", g_raw)
+    tooth = g_clean if g_clean else "xx"
+    imp = is_impaksi_tooth(g_clean)
+    op_word = "Odontektomi" if imp else "Ekstraksi"
 
     dpjp_full = _fix_drg_lower((row.get("DPJP (auto)") or "").strip())
     telp = (row.get("telp") or "").strip()
@@ -289,18 +264,78 @@ def build_block_with_meta(no, row, visit_key, base_date):
     lines.append(f"{no}. {L['nama']}{row['Nama']}")
     lines.append(f"{L['tgl']}{row['Tgl Lahir']}")
     lines.append(f"{L['rm']}{fmt_rm(row['No. RM'])}")
-    lines.append(f"{L['diag']}{diagnosa}")
-    lines.append(f"{L['tind']}{tindakan[0] if len(tindakan)==1 else tindakan}")
-    lines.append(f"{L['kont']}{kontrol}")
+
+    tindakan_list = []
+    diagnosa_txt = ""
+    kontrol_txt = ""
+
+    if tpl_key == "Kunjungan 1":
+        diagnosa_txt = ""
+        tindakan_list = [
+            "Konsultasi",
+            f"Periapikal X-ray gigi {tooth} / OPG X-Ray",
+        ]
+        hplus = (date.today() + timedelta(days=7)).strftime("%d/%m/%Y")
+        # gunakan kata kerja kecil pada 'pro ekstraksi/odontektomi' sesuai contoh kamu
+        op_lower = "odontektomi" if imp else "ekstraksi"
+        kontrol_txt = f"Pro {op_lower} gigi {tooth} dalam lokal anestesi ({hplus})"
+
+    elif tpl_key == "Kunjungan 2":
+        if imp:
+            diagnosa_txt = f"Impaksi gigi {tooth} kelas xx posisi xx Mesioangular"
+            tindakan_list = [f"Odontektomi gigi {tooth} dalam lokal anestesi"]
+        else:
+            diagnosa_txt = f"Gangren pulpa gigi {tooth} / Gangren radiks gigi {tooth}"
+            tindakan_list = [f"Ekstraksi gigi {tooth} dalam lokal anestesi"]
+        kontrol_txt = compute_kontrol_text("POD IV (xx/04/2025)", diagnosa_txt, base_date)
+
+    elif tpl_key == "Kunjungan 3":
+        diagnosa_txt = f"POD III {op_word} gigi {tooth} dalam lokal anestesi"
+        tindakan_list = ["Cuci luka intraoral dengan NaCl 0,9%"]
+        kontrol_txt = compute_kontrol_text("POD VII (xx/04/2025)", diagnosa_txt, base_date)
+
+    elif tpl_key == "Kunjungan 4":
+        diagnosa_txt = f"POD VII {op_word} gigi {tooth} dalam lokal anestesi"
+        tindakan_list = ["Cuci luka intra oral dengan NaCl 0,9%", "Aff hecting"]
+        kontrol_txt = compute_kontrol_text("POD XIV (xx/04/2025)", diagnosa_txt, base_date)
+
+    elif tpl_key == "Kunjungan 5":
+        diagnosa_txt = f"POD XIV {op_word} gigi {tooth} dalam lokal anestesi"
+        tindakan_list = ["Kontrol luka post operasi", "Rujuk balik FKTP"]
+        kontrol_txt = "-"
+
+    else:
+        # fallback: pakai template dasar + filter
+        tpl = VISIT_TEMPLATES.get(tpl_key, VISIT_TEMPLATES["(Pilih)"])
+        diagnosa = replace_gigi(tpl["diagnosa"], tooth)
+        tlist = [replace_gigi(t, tooth) for t in tpl["tindakan"]]
+        kontrol = replace_gigi(tpl["kontrol"], tooth)
+        diagnosa, tlist, kontrol = filter_for_tooth(diagnosa, tlist, kontrol, tooth)
+        diagnosa_txt = diagnosa
+        tindakan_list = tlist
+        kontrol_txt = compute_kontrol_text(kontrol, diagnosa_txt, base_date) if kontrol else ""
+
+    lines.append(f"{L['diag']}{diagnosa_txt}")
+
+    if tpl_key == "Kunjungan 3" and len(tindakan_list) == 1:
+        lines.append(f"{L['tind']}{tindakan_list[0]}")
+    else:
+        lines.append(f"{L['tind']}")
+        for t in tindakan_list:
+            lines.append(f"    * {t}")
+
+    lines.append(f"{L['kont']}{kontrol_txt}")
     lines.append(f"{L['dpjp']}{dpjp_full}")
     lines.append(f"{L['telp']}{telp}")
-    lines.append(f"{L['opr']}drg. {operator if operator and not operator.lower().startswith('drg') else operator}")
+    lines.append(f"{L['opr']}{operator}")
 
-    konsul_flag = any(re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", t) for t in tindakan)
-    return "\n".join(lines), tindakan, konsul_flag
-    
-# ===== PDF Parser =====
+    konsul_flag = any(re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", t) for t in tindakan_list)
 
+    return "\n".join(lines), tindakan_list, konsul_flag
+
+# =========================================================
+# Parser PDF (tetap)
+# =========================================================
 def parse_pdf_to_rows_and_period_bytes(pdf_bytes: bytes):
     rows = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -350,7 +385,6 @@ def parse_pdf_to_rows_and_period_bytes(pdf_bytes: bytes):
         )[0].strip()
 
         dokter_raw = dokter_raw.rstrip(",;")
-
         dpjp_auto = _fix_drg_lower(map_doctor_to_canonical(dokter_raw))
 
         rows.append({
@@ -358,7 +392,6 @@ def parse_pdf_to_rows_and_period_bytes(pdf_bytes: bytes):
             "Nama": name_clean,
             "Tgl Lahir": m.group("dob").replace("-", "/"),
             "DPJP (auto)": dpjp_auto,
-            "checked": False,
             "visit": "(Pilih)",
             "gigi": "",
             "telp": "",
@@ -381,18 +414,18 @@ def parse_pdf_to_rows_and_period_bytes(pdf_bytes: bytes):
 
     return out, period_date
 
-# ===== UI =====
-
-st.title("🦷 Review Pasien (Ported) — Streamlit")
-st.caption("Porting dari app Tkinter: parsing PDF → tabel → template WA + shared memory (Supabase, keyed by PERIODE)")
+# =========================================================
+# UI — Per Pasien Block + Editor + Highlight Hijau
+# =========================================================
+st.title("🦷 Review Pasien — Per Pasien Block")
+st.caption("Parsing PDF → blok per pasien (editable) → gabungan (format beku). Sinkronisasi lintas user: next step (Supabase).")
 
 with st.expander("Catatan & aturan format", expanded=False):
     st.markdown(
         "- **Nama multi-baris utuh**, NOPEN 8–18 digit, RM → `XX.XX.XX`.\n"
-        "- **PERIODE** dipakai sebagai base tanggal kontrol & rekap harian, **dan kunci shared memory**.\n"
+        "- **PERIODE** dipakai sebagai base tanggal kontrol POD (kecuali Kunjungan 1 = H+7 dari hari ini).\n"
         "- Kunjungan 3: **Tindakan** satu baris (tanpa bullet).\n"
-        "- Kontrol otomatis dari **POD** (dengan aturan Minggu → POD IV / +1 hari).\n"
-        "- Status review disimpan bersama via Supabase berdasarkan **tanggal PERIODE + RM** (bukan nama file).\n"
+        "- Format spacing **beku** (dipertahankan saat copy/download)."
     )
 
 uploaded = st.file_uploader("Upload PDF laporan", type=["pdf"])
@@ -400,6 +433,10 @@ uploaded = st.file_uploader("Upload PDF laporan", type=["pdf"])
 @st.cache_data(show_spinner=False)
 def _parse_cached(pdf_bytes: bytes):
     return parse_pdf_to_rows_and_period_bytes(pdf_bytes)
+
+# state: per pasien (RM) simpan reviewed + teks editor
+if "per_patient" not in st.session_state:
+    st.session_state.per_patient = {}  # rm -> dict(state)
 
 if uploaded is not None:
     data = uploaded.read()
@@ -413,112 +450,125 @@ if uploaded is not None:
         st.error("PDF tidak terbaca / pola tidak cocok.")
         st.stop()
 
-    # Tanggal PERIODE → kunci bersama
     per_date = period_date if period_date else date.today()
     hari_str = HARI_ID[per_date.weekday()]
     per_str_show = per_date.strftime("%d/%m/%Y")
-    per_str_db = per_date.strftime("%Y-%m-%d")
 
     st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded.name}**")
 
-    # ===== Shared review status load (keyed by PERIODE only) =====
-    supabase = get_supabase()
     reviewer = st.text_input("Nama reviewer (opsional)")
 
-    df = pd.DataFrame(rows, columns=["No.","Nama","Tgl Lahir","No. RM","DPJP (auto)","visit","gigi","telp","operator","checked"])
+    st.markdown("#### Opsi umum")
+    colSa, colSb = st.columns([1,2])
+    with colSa:
+        select_all = st.checkbox("Centang semua sebagai reviewed")
+    with colSb:
+        st.info("Centang ini hanya mengubah status ‘reviewed’. Edit teks tetap bisa di tiap blok pasien.")
 
-    review_map = load_review_map(supabase, per_str_db)
-    if review_map:
-        df["checked"] = df["No. RM"].astype(str).map(lambda rm: bool(review_map.get(rm, {}).get("checked", False)))
+    # ===== render blok per pasien
+    st.markdown("---")
+    st.markdown("### Blok per pasien (editable)")
 
-    st.markdown("### Tabel pasien (editable)")
-
-    # Centang semua
-    select_all = st.checkbox("Centang semua baris", value=False)
-    if select_all:
-        df["checked"] = True
-
-    edited = st.data_editor(
-        df,
-        column_config={
-            "checked": st.column_config.CheckboxColumn("✓"),
-            "visit": st.column_config.TextColumn("Kunjungan"),
-            "gigi": st.column_config.TextColumn("Gigi"),
-            "telp": st.column_config.TextColumn("Telp"),
-            "operator": st.column_config.TextColumn("Operator"),
-        },
-        hide_index=True,
-        use_container_width=True,
-        num_rows="fixed",
-        height=380,
-    )
-
-    # Simpan perubahan status review (shared by date)
-    def current_checked_in_db(rm):
-        return bool(review_map.get(str(rm), {}).get("checked", False))
-
-    changed = []
-    for _, r in edited.iterrows():
-        rm = str(r["No. RM"])
-        new_checked = bool(r["checked"])
-        old_checked = current_checked_in_db(rm)
-        if new_checked != old_checked:
-            changed.append({
-                "rm": rm,
-                "checked": new_checked,
-                "reviewed_by": (reviewer or "").strip() or None
-            })
-
-    if st.button("💾 Simpan status review (sync)", use_container_width=True, type="primary"):
-        try:
-            upsert_reviews(supabase, per_str_db, changed)
-            st.success(f"Status {len(changed)} pasien tersimpan untuk tanggal {per_str_show} & terbagi ke semua user.")
-            st.experimental_rerun()
-        except Exception as e:
-            st.error(f"Gagal menyimpan: {e}")
-
-    # Build preview blocks + hitung rekap
-    sel = edited[edited["checked"] == True].copy().sort_values("No.")
-    preview_blocks = []
+    combined_blocks = []
     konsultasi_count = 0
 
-    if not sel.empty:
-        st.markdown("### Blok per pasien (hijau = sudah direview)")
-        GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
-        GRAY  = "background-color:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px"
+    # simple styles for green background
+    GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
+    GRAY  = "background-color:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px"
 
-        for _, r in sel.iterrows():
+    # urutkan by No.
+    df = pd.DataFrame(rows).sort_values("No.")
+    for _, r in df.iterrows():
+        rm = str(r["No. RM"])
+        # init state default (sekali)
+        st.session_state.per_patient.setdefault(rm, {
+            "reviewed": False,
+            "visit": r["visit"],
+            "gigi": r["gigi"],
+            "telp": r["telp"],
+            "operator": r["operator"],
+            "block": None,          # text block terakhir
+            "manually_edited": False,
+            "name": r["Nama"],
+            "dob": r["Tgl Lahir"],
+            "dpjp_auto": r["DPJP (auto)"],
+            "no": int(r["No."]),
+        })
+
+        state = st.session_state.per_patient[rm]
+
+        # override reviewed bila select_all dicentang
+        if select_all:
+            state["reviewed"] = True
+
+        # kolom kecil buat input field yang dipakai build
+        with st.container():
+            # header + status
+            left, right = st.columns([6, 1])
+            with left:
+                st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
+                st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
+            with right:
+                state["reviewed"] = st.checkbox("Reviewed", value=state["reviewed"], key=f"rev_{rm}")
+
+            # input mini
+            v1, v2, v3, v4 = st.columns(4)
+            with v1:
+                state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{rm}"))
+            with v2:
+                state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{rm}")
+            with v3:
+                state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{rm}")
+            with v4:
+                state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
+
+            # build default block (berdasarkan state terkini)
             rdict = {
-                "Nama": r["Nama"],
-                "Tgl Lahir": r["Tgl Lahir"],
-                "No. RM": r["No. RM"],
-                "DPJP (auto)": r["DPJP (auto)"],
-                "visit": r["visit"],
-                "gigi": r["gigi"],
-                "telp": r["telp"],
-                "operator": r["operator"],
+                "Nama": state["name"],
+                "Tgl Lahir": state["dob"],
+                "No. RM": rm,
+                "DPJP (auto)": state["dpjp_auto"],
+                "visit": state["visit"],
+                "gigi": state["gigi"],
+                "telp": state["telp"],
+                "operator": state["operator"],
             }
-            block, tind_list, konsul_flag = build_block_with_meta(int(r["No."]), rdict, r["visit"], per_date)
+            default_block, tind_list, konsul_flag = build_block_with_meta(state["no"], rdict, state["visit"], per_date)
 
-            # aturan reviewed: ada kunjungan + gigi + (telp atau operator)
-            reviewed = (
-                str(r["visit"]).lower().startswith("kunjungan")
-                and str(r["gigi"]).strip() != ""
-                and (str(r["telp"]).strip() != "" or str(r["operator"]).strip() != "")
+            # initial block: kalau belum pernah edit manual → pakai default
+            if state["block"] is None or not state["manually_edited"]:
+                state["block"] = default_block
+
+            # warna hijau kalau reviewed
+            wrap_style = GREEN if state["reviewed"] else GRAY
+            st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
+            state["block"] = st.text_area(
+                "Blok preview (boleh revisi manual)",
+                value=state["block"],
+                height=220,
+                key=f"block_{rm}"
             )
-            wrap = GREEN if reviewed else GRAY
+            st.markdown("</div>", unsafe_allow_html=True)
 
-            st.markdown(f'<div style="{wrap}"><pre style="white-space:pre-wrap">{block}</pre></div>', unsafe_allow_html=True)
-            st.markdown("")
+            # kalau isinya berubah oleh user → tandai edited
+            if state["block"] != default_block:
+                state["manually_edited"] = True
 
-            preview_blocks.append(block)
-            if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", block):
-                konsultasi_count += 1
-                
-    total_reviewed = len(preview_blocks)
+            # akumulasi untuk combined & hitung konsultasi
+            if state["reviewed"]:
+                combined_blocks.append(state["block"])
+                if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", state["block"]):
+                    konsultasi_count += 1
+
+        st.markdown("")  # spacer
+
+    # ===== gabungan + rekap
+    total_reviewed = len(combined_blocks)
     tindakan_count = max(total_reviewed - konsultasi_count, 0)
 
-    # ===== Compose final text with frozen spacing (plain text) =====
+    st.markdown("---")
+    st.markdown("### Rekap & Gabungan (format beku)")
+
     header_lines = [
         "Review jumlah pasien Poli Bedah Mulut dan Maksilofasial RSGMP UNHAS, ",
         f"{hari_str}, {per_str_show}",
@@ -535,9 +585,7 @@ if uploaded is not None:
         "POLI INTEGRASI",
         "",
     ]
-
-    body_text = "\n\n".join(preview_blocks) if preview_blocks else ""
-
+    body_text = "\n\n".join(combined_blocks) if combined_blocks else ""
     footer_lines = [
         "",
         "------------------------------------------------------",
@@ -547,45 +595,33 @@ if uploaded is not None:
         "Chief jaga poli :",
         "drg. xx",
     ]
+    final_text = "\n".join(header_lines) + body_text + ("\n" + "\n".join(footer_lines))
 
-    final_text = "\n".join(header_lines) + body_text + ("\n" + "\n".join(footer_lines) if body_text else "\n" + "\n".join(footer_lines))
+    st.text_area("Teks gabungan", final_text, height=420)
 
-    col1, col2 = st.columns([3,2], gap="large")
-    with col1:
-        st.markdown("### Preview teks final (format beku)")
-        st.text_area("Teks hasil", final_text, height=420)
-
-        if final_text.strip():
-            # Download TXT (UTF-8)
-            st.download_button(
-                "⬇️ Download TXT",
-                data=final_text.encode("utf-8"),
-                file_name="laporan_pasien.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
-
-            # Download DOCX (pakai monospace supaya spasi tidak berubah)
-            buf = io.BytesIO()
-            doc = Document()
-            style = doc.styles["Normal"]
-            style.font.name = "Courier New"
-            for part in final_text.split("\n"):
-                doc.add_paragraph(part)
-            doc.save(buf)
-            st.download_button(
-                "⬇️ Download DOCX",
-                data=buf.getvalue(),
-                file_name="laporan_pasien.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True
-            )
-
-    with col2:
-        st.markdown("### Opsi")
-        st.write("- Ubah nilai **Kunjungan/Gigi/Telp/Operator** langsung di tabel.")
-        st.write("- **Centang** pasien yang sudah direview, lalu klik **Simpan status review (sync)** agar tersimpan bersama per tanggal.")
-        st.write("- DPJP terisi otomatis via *fuzzy mapping* dari PDF.")
-
-st.divider()
-st.caption("Made for Streamlit Cloud — pdfplumber + python-docx + Supabase shared state (keyed by PERIODE)")
+    # Download
+    colD1, colD2 = st.columns(2)
+    with colD1:
+        st.download_button(
+            "⬇️ Download TXT",
+            data=final_text.encode("utf-8"),
+            file_name="laporan_pasien.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
+    with colD2:
+        # DOCX monospace agar spasi tetap
+        buf = io.BytesIO()
+        doc = Document()
+        style = doc.styles["Normal"]
+        style.font.name = "Courier New"
+        for part in final_text.split("\n"):
+            doc.add_paragraph(part)
+        doc.save(buf)
+        st.download_button(
+            "⬇️ Download DOCX",
+            data=buf.getvalue(),
+            file_name="laporan_pasien.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True
+        )
