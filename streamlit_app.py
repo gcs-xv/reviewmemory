@@ -594,14 +594,26 @@ if uploaded is not None:
 
     reviewer = st.text_input("Nama reviewer (opsional)")
 
-    # Tombol save "melayang" di kanan atas agar selalu mudah diakses
+    # Tombol save mengambang (fixed di kanan-bawah; ikut saat scroll)
     st.markdown(
-        "<div style='position:sticky; top:8px; display:flex; justify-content:flex-end; z-index:999;'>",
-        unsafe_allow_html=True
+        """
+        <div id="float-save" style="
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            z-index: 1000;
+            background: #ffffff;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            padding: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,.08);
+        ">
+        """,
+        unsafe_allow_html=True,
     )
-    col_sticky = st.columns([1,1,6])[0]  # kecil di kanan
-    with col_sticky:
-        if st.button("💾 Simpan blok (shared)", use_container_width=True, type="primary"):
+    col_float = st.columns([1])[0]
+    with col_float:
+        if st.button("💾 Simpan blok (shared)", key="btn_save_shared", use_container_width=True, type="primary"):
             try:
                 payload = _compute_rows_to_save(rows, reviewer)
                 upsert_reviews(supabase, per_str_db, uploaded.name, payload)
@@ -635,6 +647,7 @@ if uploaded is not None:
             "no": int(r["No."]),
         })
         state = st.session_state.per_patient[rm]
+        patient_key = f"{rm}_{state['no']}"
 
         # Prefill dari Supabase kalau sudah pernah disimpan
         saved = review_map.get(rm)
@@ -649,22 +662,7 @@ if uploaded is not None:
                 state["block"] = saved["block_text"]
                 state["manually_edited"] = True  # jangan ditimpa builder
 
-        # header identitas (di luar wrapper dulu)
-        st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
-        st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
-        
-        # input mini
-        v1, v2, v3, v4 = st.columns(4)
-        with v1:
-            state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{rm}"))
-        with v2:
-            state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{rm}")
-        with v3:
-            state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{rm}")
-        with v4:
-            state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
-        
-        # hitung reviewed otomatis setelah input
+        # --- reviewed otomatis bila data lengkap (setelah prefill) ---
         auto_ok = (
             str(state["visit"]).lower().startswith("kunjungan")
             and str(state["gigi"]).strip() != ""
@@ -672,23 +670,21 @@ if uploaded is not None:
         )
         wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if auto_ok else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
         st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
-        
-        # kalau belum lengkap: JANGAN render blok sama sekali
-        if not auto_ok:
-            st.markdown("</div>", unsafe_allow_html=True)
-            st.markdown("")  # spacer
-            continue
+
+        # header identitas
+        st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
+        st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
 
         # input mini
         v1, v2, v3, v4 = st.columns(4)
         with v1:
-            state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{rm}"))
+            state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{patient_key}"))
         with v2:
-            state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{rm}")
+            state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{patient_key}")
         with v3:
-            state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{rm}")
+            state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{patient_key}")
         with v4:
-            state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
+            state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{patient_key}")
 
         # kalau belum lengkap: JANGAN render blok sama sekali
         if not auto_ok:
@@ -720,7 +716,7 @@ if uploaded is not None:
             "Blok preview (boleh revisi manual)",
             value=state["block"],
             height=220,
-            key=f"block_{rm}"
+            key=f"block_{patient_key}"
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
