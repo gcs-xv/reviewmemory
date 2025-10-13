@@ -649,7 +649,22 @@ if uploaded is not None:
                 state["block"] = saved["block_text"]
                 state["manually_edited"] = True  # jangan ditimpa builder
 
-        # --- reviewed otomatis bila data lengkap (setelah prefill) ---
+        # header identitas (di luar wrapper dulu)
+        st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
+        st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
+        
+        # input mini
+        v1, v2, v3, v4 = st.columns(4)
+        with v1:
+            state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{rm}"))
+        with v2:
+            state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{rm}")
+        with v3:
+            state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{rm}")
+        with v4:
+            state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
+        
+        # hitung reviewed otomatis setelah input
         auto_ok = (
             str(state["visit"]).lower().startswith("kunjungan")
             and str(state["gigi"]).strip() != ""
@@ -657,10 +672,12 @@ if uploaded is not None:
         )
         wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if auto_ok else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
         st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
-
-        # header identitas
-        st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
-        st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
+        
+        # kalau belum lengkap: JANGAN render blok sama sekali
+        if not auto_ok:
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("")  # spacer
+            continue
 
         # input mini
         v1, v2, v3, v4 = st.columns(4)
