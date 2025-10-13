@@ -979,16 +979,23 @@ if uploaded_bytes is not None:
                 st.session_state[ta_key] = saved_text
                 state["block"] = saved_text
             state["force_load_from_db"] = False
+            # Tambahkan marker agar tidak trigger manual touched pada rerun ini
+            state["_just_injected"] = True
 
-        # Prefer DB-saved text if available and user hasn't manually edited in this session
+        # Prefer DB-saved text if available; pada init pertama, pakai DB jika ada, kalau tidak pakai default terbaru
         saved_db = review_map.get(rm, {})
         saved_text = (saved_db.get("block_text") or "").strip()
 
         if ta_key not in st.session_state:
-            st.session_state[ta_key] = saved_text if (saved_text and not state.get("manually_touched", False)) else default_block
+            # Pada init pertama, pakai teks dari DB jika ada; kalau tidak, pakai default terbaru
+            st.session_state[ta_key] = saved_text if saved_text else default_block
         elif state.get("last_sig") != current_sig:
             if not state.get("manually_touched", False):
-                st.session_state[ta_key] = saved_text if saved_text else default_block
+                # Ketika input Kunjungan/Gigi/Telp/Operator berubah, rebuild dari default terbaru
+                st.session_state[ta_key] = default_block
+
+        # Simpan nilai sebelumnya sebelum render textarea
+        prev_text_value = st.session_state.get(ta_key)
 
         # Render textarea TANPA value=..., cukup pakai key (ambil dari session_state)
         edited_text = st.text_area(
@@ -997,9 +1004,12 @@ if uploaded_bytes is not None:
             height=220,
         )
 
-        # Jika pengguna mengedit berbeda dari default builder, tandai sebagai manual
-        if edited_text != default_block:
+        # Tandai manual HANYA jika user mengubah isi textarea dibanding nilai sebelumnya,
+        # bukan saat kita inject dari DB atau rebuild default.
+        if prev_text_value is not None and edited_text != prev_text_value:
             state["manually_touched"] = True
+        # Bersihkan marker just_injected setelah textarea dirender
+        state["_just_injected"] = False
         st.markdown("</div>", unsafe_allow_html=True)
 
         # --- Deteksi perubahan & Auto-save ---
