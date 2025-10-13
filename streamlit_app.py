@@ -537,9 +537,17 @@ with st.expander("Catatan & aturan format", expanded=False):
 
 uploaded = st.file_uploader("Upload PDF laporan", type=["pdf"])
 
+
 @st.cache_data(show_spinner=False)
 def _parse_cached(pdf_bytes: bytes):
     return parse_pdf_to_rows_and_period_bytes(pdf_bytes)
+
+# --- Autoflush flags & sidebar action flags ---
+# (Used for always-visible sidebar buttons / auto-sync without external packages)
+if "do_save_blocks" not in st.session_state:
+    st.session_state.do_save_blocks = False
+if "do_save_rekap" not in st.session_state:
+    st.session_state.do_save_rekap = False
 
 # Helper: Komputasi baris yang akan di-save dari st.session_state
 def _compute_rows_to_save(all_rows, reviewer_name):
@@ -589,6 +597,15 @@ if uploaded is not None:
     per_str_db = per_date.strftime("%Y-%m-%d")
     supabase = get_supabase()
     review_map = load_review_map(supabase, per_str_db)
+
+    # ===== Sidebar auto-sync (simple meta refresh; no extra packages) =====
+    with st.sidebar:
+        st.markdown("## 🔄 Auto-sync")
+        auto_sync = st.checkbox("Aktifkan auto-sync tiap 10 detik", value=False, key="auto_sync_toggle")
+        if auto_sync:
+            # Simple meta refresh to reload page every 10s so shared changes are seen
+            st.markdown('<meta http-equiv="refresh" content="10">', unsafe_allow_html=True)
+        st.caption("Saat aktif, halaman akan auto-refresh setiap 10 detik untuk menarik perubahan dari Supabase.")
 
     st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded.name}**")
 
@@ -651,18 +668,29 @@ if uploaded is not None:
         state.setdefault("last_sig", None)
         state.setdefault("manually_touched", False)
 
-        # Prefill dari Supabase kalau sudah pernah disimpan
+        # Prefill / overwrite dari Supabase jika ada pembaruan, kecuali user sudah mengedit manual
         saved = review_map.get(rm)
+        state.setdefault("db_updated_at", None)
         if saved:
-            # isian form (jika ada di DB)
-            state["visit"] = normalize_visit(saved.get("visit") or state["visit"])
-            state["gigi"] = saved.get("gigi") or state["gigi"]
-            state["telp"] = saved.get("telp") or state["telp"]
-            state["operator"] = saved.get("operator") or state["operator"]
-            # block text (jika ada)
-            if state["block"] is None and saved.get("block_text"):
-                state["block"] = saved["block_text"]
-                state["manually_edited"] = True  # jangan ditimpa builder
+            db_ts = str(saved.get("updated_at") or "")
+            # Perbarui state bila:
+            #  - belum pernah punya timestamp DB, atau
+            #  - timestamp DB berubah dari terakhir kita tahu,
+            # dan user belum mengubah textarea di sesi ini.
+            if (state["db_updated_at"] != db_ts) and (not state.get("manually_touched", False)):
+                # update form fields dari DB bila tersedia
+                if saved.get("visit"):
+                    state["visit"] = normalize_visit(saved.get("visit"))
+                if saved.get("gigi"):
+                    state["gigi"] = saved.get("gigi")
+                if saved.get("telp"):
+                    state["telp"] = saved.get("telp")
+                if saved.get("operator"):
+                    state["operator"] = saved.get("operator")
+                # update block text jika DB punya
+                if saved.get("block_text"):
+                    state["block"] = saved["block_text"]
+                state["db_updated_at"] = db_ts
 
         # input mini
         v1, v2, v3, v4 = st.columns(4)
@@ -784,6 +812,26 @@ if uploaded is not None:
     saved_summary = load_summary(supabase, per_str_db)
     if saved_summary:
         final_text = saved_summary
+
+    # (Optional) Handlers for sidebar-triggered saves if needed later
+    if st.session_state.get("do_save_blocks"):
+        try:
+            payload = _compute_rows_to_save(rows, reviewer)
+            upsert_reviews(supabase, per_str_db, uploaded.name, payload)
+            st.success(f"Tersimpan {len(payload)} blok reviewed (shared).")
+        except Exception as e:
+            st.error(f"Gagal simpan blok: {e}")
+        finally:
+            st.session_state.do_save_blocks = False
+
+    if st.session_state.get("do_save_rekap"):
+        try:
+            upsert_summary(supabase, per_str_db, final_text)
+            st.success(f"Rekap {per_str_show} tersimpan & terbagi ke semua user.")
+        except Exception as e:
+            st.error(f"Gagal simpan rekap: {e}")
+        finally:
+            st.session_state.do_save_rekap = False
 
     st.text_area("Teks gabungan", final_text, height=420)
 
