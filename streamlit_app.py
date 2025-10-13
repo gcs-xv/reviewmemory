@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 from docx import Document
+from supabase import create_client
 
 # =========================================================
 # Page
@@ -244,6 +245,58 @@ def normalize_visit(text: str) -> str:
             return k
     return t
 
+# ===== Shared storage (Supabase) =====
+@st.cache_resource
+def get_supabase():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_ANON_KEY"]
+    return create_client(url, key)
+
+def load_review_map(supabase, periode_date: str):
+    """Ambil status + block_text per RM untuk tanggal tsb."""
+    res = (
+        supabase.table("reviews")
+        .select("rm, checked, block_text, reviewed_by, updated_at")
+        .eq("periode_date", periode_date)
+        .execute()
+    )
+    data = res.data or []
+    return {row["rm"]: row for row in data}
+
+def upsert_reviews(supabase, periode_date: str, file_name: str, rows_to_upsert: list[dict]):
+    """Simpan status & block_text per RM (upsert by (periode_date, rm))."""
+    if not rows_to_upsert:
+        return
+    payload = []
+    for r in rows_to_upsert:
+        payload.append({
+            "periode_date": periode_date,
+            "file_name": file_name,
+            "rm": str(r["rm"]),
+            "checked": bool(r.get("checked", True)),
+            "reviewed_by": r.get("reviewed_by"),
+            "block_text": r.get("block_text", None),
+        })
+    supabase.table("reviews").upsert(payload, on_conflict="periode_date,rm").execute()
+
+def load_summary(supabase, periode_date: str) -> str:
+    # butuh table daily_summaries(periode_date date primary key, summary_text text, updated_at timestamptz default now())
+    res = (
+        supabase.table("daily_summaries")
+        .select("summary_text")
+        .eq("periode_date", periode_date)
+        .maybe_single()
+        .execute()
+    )
+    row = res.data
+    return (row or {}).get("summary_text") or ""
+
+def upsert_summary(supabase, periode_date: str, summary_text: str):
+    supabase.table("daily_summaries").upsert(
+        {"periode_date": periode_date, "summary_text": summary_text},
+        on_conflict="periode_date"
+    ).execute()
+
 # =========================================================
 # Block Builder — logika baru impaksi / non-impaksi
 # =========================================================
@@ -471,167 +524,220 @@ if uploaded is not None:
     per_date = period_date if period_date else date.today()
     hari_str = HARI_ID[per_date.weekday()]
     per_str_show = per_date.strftime("%d/%m/%Y")
+    per_str_db = per_date.strftime("%Y-%m-%d")
+    supabase = get_supabase()
+    review_map = load_review_map(supabase, per_str_db)
 
     st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded.name}**")
 
     reviewer = st.text_input("Nama reviewer (opsional)")
 
-# ===== render blok per pasien
-st.markdown("---")
-st.markdown("### Blok per pasien (editable)")
+    # ===== render blok per pasien
+    st.markdown("---")
+    st.markdown("### Blok per pasien (editable)")
 
-combined_blocks = []
-konsultasi_count = 0
+    combined_blocks = []
+    konsultasi_count = 0
 
-# style hijau (selalu hijau untuk blok yang tampil = sudah reviewed otomatis)
+    # urutkan by No.
+    df = pd.DataFrame(rows).sort_values("No.")
+    for _, r in df.iterrows():
+        rm = str(r["No. RM"])
+        # init state default (sekali)
+        st.session_state.per_patient.setdefault(rm, {
+            "visit": r["visit"],
+            "gigi": r["gigi"],
+            "telp": r["telp"],
+            "operator": r["operator"],
+            "block": None,          # text block terakhir
+            "manually_edited": False,
+            "name": r["Nama"],
+            "dob": r["Tgl Lahir"],
+            "dpjp_auto": r["DPJP (auto)"],
+            "no": int(r["No."]),
+        })
+        state = st.session_state.per_patient[rm]
 
-# urutkan by No.
-df = pd.DataFrame(rows).sort_values("No.")
-for _, r in df.iterrows():
-    rm = str(r["No. RM"])
-    # init state default (sekali)
-    st.session_state.per_patient.setdefault(rm, {
-        "visit": r["visit"],
-        "gigi": r["gigi"],
-        "telp": r["telp"],
-        "operator": r["operator"],
-        "block": None,          # text block terakhir
-        "manually_edited": False,
-        "name": r["Nama"],
-        "dob": r["Tgl Lahir"],
-        "dpjp_auto": r["DPJP (auto)"],
-        "no": int(r["No."]),
-    })
-    state = st.session_state.per_patient[rm]
+        # Prefill dari Supabase kalau sudah pernah disimpan
+        saved = review_map.get(rm)
+        if saved and (state["block"] is None):
+            if saved.get("block_text"):
+                state["block"] = saved["block_text"]
+                state["manually_edited"] = True  # jangan ditimpa builder
 
-    # --- reviewed otomatis bila kunjungan valid + gigi terisi + (telp atau operator) ---
-    auto_ok = (
-        str(state["visit"]).lower().startswith("kunjungan")
-        and str(state["gigi"]).strip() != ""
-        and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
-    )
-    wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if auto_ok else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
-    st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
+        # --- reviewed otomatis bila data lengkap ---
+        auto_ok = (
+            str(state["visit"]).lower().startswith("kunjungan")
+            and str(state["gigi"]).strip() != ""
+            and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
+        )
+        wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if auto_ok else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
+        st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
 
-    # header identitas
-    st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
-    st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
+        # header identitas
+        st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
+        st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
 
-    # input mini
-    v1, v2, v3, v4 = st.columns(4)
-    with v1:
-        state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{rm}"))
-    with v2:
-        state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{rm}")
-    with v3:
-        state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{rm}")
-    with v4:
-        state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
+        # input mini
+        v1, v2, v3, v4 = st.columns(4)
+        with v1:
+            state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{rm}"))
+        with v2:
+            state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{rm}")
+        with v3:
+            state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{rm}")
+        with v4:
+            state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
 
-    # kalau belum lengkap: JANGAN render blok sama sekali
-    if not auto_ok:
+        # kalau belum lengkap: JANGAN render blok sama sekali
+        if not auto_ok:
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("")  # spacer
+            continue
+
+        # build default block (berdasarkan state terkini)
+        rdict = {
+            "Nama": state["name"],
+            "Tgl Lahir": state["dob"],
+            "No. RM": rm,
+            "DPJP (auto)": state["dpjp_auto"],
+            "visit": state["visit"],
+            "gigi": state["gigi"],
+            "telp": state["telp"],
+            "operator": state["operator"],
+        }
+        default_block, tind_list, konsul_flag = build_block_with_meta(
+            state["no"], rdict, state["visit"], per_date
+        )
+
+        # initial block: kalau belum pernah edit manual → pakai default
+        if state["block"] is None or not state["manually_edited"]:
+            state["block"] = default_block
+
+        # render blok dengan background hijau penuh
+        edited_text = st.text_area(
+            "Blok preview (boleh revisi manual)",
+            value=state["block"],
+            height=220,
+            key=f"block_{rm}"
+        )
         st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("")  # spacer tipis biar rapi antar baris
-        continue
 
-    # build default block (berdasarkan state terkini)
-    rdict = {
-        "Nama": state["name"],
-        "Tgl Lahir": state["dob"],
-        "No. RM": rm,
-        "DPJP (auto)": state["dpjp_auto"],
-        "visit": state["visit"],
-        "gigi": state["gigi"],
-        "telp": state["telp"],
-        "operator": state["operator"],
-    }
-    default_block, tind_list, konsul_flag = build_block_with_meta(
-        state["no"], rdict, state["visit"], per_date
-    )
+        # tandai bila user mengubah isi
+        state["manually_edited"] = (edited_text != default_block)
+        state["block"] = edited_text
 
-    # initial block: kalau belum pernah edit manual → pakai default
-    if state["block"] is None or not state["manually_edited"]:
-        state["block"] = default_block
+        # akumulasi gabungan & hitung konsultasi
+        combined_blocks.append(state["block"])
+        if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", state["block"]):
+            konsultasi_count += 1
 
-    # render blok dengan background hijau penuh
-    edited_text = st.text_area(
-        "Blok preview (boleh revisi manual)",
-        value=state["block"],
-        height=220,
-        key=f"block_{rm}"
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("")  # spacer
 
-    # tandai bila user mengubah isi
-    state["manually_edited"] = (edited_text != default_block)
-    state["block"] = edited_text
+    # ===== Simpan blok reviewed ke Supabase =====
+    st.markdown("#### Simpan perubahan (shared)")
+    rows_to_save = []
 
-    # akumulasi gabungan & hitung konsultasi
-    combined_blocks.append(state["block"])
-    if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", state["block"]):
-        konsultasi_count += 1
+    # Kumpulkan hanya blok yang tampil (auto_ok)
+    df2 = pd.DataFrame(rows).sort_values("No.")
+    for _, rr in df2.iterrows():
+        rm_key = str(rr["No. RM"])
+        st_state = st.session_state.per_patient.get(rm_key)
+        if not st_state:
+            continue
+        reviewed_ok = (
+            str(st_state["visit"]).lower().startswith("kunjungan")
+            and str(st_state["gigi"]).strip() != ""
+            and (str(st_state["telp"]).strip() != "" or str(st_state["operator"]).strip() != "")
+        )
+        if reviewed_ok and (st_state.get("block") or "").strip():
+            rows_to_save.append({
+                "rm": rm_key,
+                "checked": True,
+                "reviewed_by": (reviewer or None),
+                "block_text": st_state["block"],
+            })
 
-    st.markdown("")  # spacer
+    col_save1, col_save2 = st.columns([1,2])
+    with col_save1:
+        if st.button("💾 Simpan blok reviewed (Supabase)", use_container_width=True, type="primary"):
+            try:
+                upsert_reviews(supabase, per_str_db, uploaded.name, rows_to_save)
+                st.success(f"Tersimpan {len(rows_to_save)} blok reviewed (shared).")
+            except Exception as e:
+                st.error(f"Gagal simpan blok: {e}")
 
-# ===== gabungan + rekap (render sekali di paling bawah) =====
-total_reviewed = len(combined_blocks)
-tindakan_count = max(total_reviewed - konsultasi_count, 0)
+    # ===== gabungan + rekap (render sekali di paling bawah) =====
+    total_reviewed = len(combined_blocks)
+    tindakan_count = max(total_reviewed - konsultasi_count, 0)
 
-st.markdown("---")
-st.markdown("### Rekap & Gabungan (format beku)")
+    st.markdown("---")
+    st.markdown("### Rekap & Gabungan (format beku)")
 
-header_lines = [
-    "Review jumlah pasien Poli Bedah Mulut dan Maksilofasial RSGMP UNHAS, ",
-    f"{hari_str}, {per_str_show}",
-    "",
-    f"Jumlah pasien     : {total_reviewed} Pasien",
-    f"Tindakan              : {tindakan_count} Pasien",
-    f"Konsultasi\t      : {konsultasi_count} Pasien",
-    f"Terjaring GA\t      : xx Pasien",
-    f"Baksos                 : xx Pasien",
-    f"VIP                        : -",
-    "",
-    "-----------------------------------------------------",
-    "",
-    "POLI INTEGRASI",
-    "",
-]
-body_text = "\n\n".join(combined_blocks) if combined_blocks else ""
-footer_lines = [
-    "",
-    "------------------------------------------------------",
-    "",
-    f"{hari_str}, {per_str_show}",
-    "",
-    "Chief jaga poli :",
-    "drg. xx",
-]
-final_text = "\n".join(header_lines) + body_text + ("\n" + "\n".join(footer_lines))
+    header_lines = [
+        "Review jumlah pasien Poli Bedah Mulut dan Maksilofasial RSGMP UNHAS, ",
+        f"{hari_str}, {per_str_show}",
+        "",
+        f"Jumlah pasien     : {total_reviewed} Pasien",
+        f"Tindakan              : {tindakan_count} Pasien",
+        f"Konsultasi\t      : {konsultasi_count} Pasien",
+        f"Terjaring GA\t      : xx Pasien",
+        f"Baksos                 : xx Pasien",
+        f"VIP                        : -",
+        "",
+        "-----------------------------------------------------",
+        "",
+        "POLI INTEGRASI",
+        "",
+    ]
+    body_text = "\n\n".join(combined_blocks) if combined_blocks else ""
+    footer_lines = [
+        "",
+        "------------------------------------------------------",
+        "",
+        f"{hari_str}, {per_str_show}",
+        "",
+        "Chief jaga poli :",
+        "drg. xx",
+    ]
+    final_text = "\n".join(header_lines) + body_text + ("\n" + "\n".join(footer_lines))
 
-st.text_area("Teks gabungan", final_text, height=420)
+    # Prefill rekap dari Supabase (kalau ada)
+    saved_summary = load_summary(supabase, per_str_db)
+    if saved_summary:
+        final_text = saved_summary
 
-colD1, colD2 = st.columns(2)
-with colD1:
-    st.download_button(
-        "⬇️ Download TXT",
-        data=final_text.encode("utf-8"),
-        file_name="laporan_pasien.txt",
-        mime="text/plain",
-        use_container_width=True
-    )
-with colD2:
-    # DOCX monospace agar spasi tetap
-    buf = io.BytesIO()
-    doc = Document()
-    style = doc.styles["Normal"]
-    style.font.name = "Courier New"
-    for part in final_text.split("\n"):
-        doc.add_paragraph(part)
-    doc.save(buf)
-    st.download_button(
-        "⬇️ Download DOCX",
-        data=buf.getvalue(),
-        file_name="laporan_pasien.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        use_container_width=True
-    )
+    st.text_area("Teks gabungan", final_text, height=420)
+
+    if st.button("💾 Simpan rekap harian (Supabase)", use_container_width=True):
+        try:
+            upsert_summary(supabase, per_str_db, final_text)
+            st.success(f"Rekap {per_str_show} tersimpan & terbagi ke semua user.")
+        except Exception as e:
+            st.error(f"Gagal simpan rekap: {e}")
+
+    colD1, colD2 = st.columns(2)
+    with colD1:
+        st.download_button(
+            "⬇️ Download TXT",
+            data=final_text.encode("utf-8"),
+            file_name="laporan_pasien.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
+    with colD2:
+        # DOCX monospace agar spasi tetap
+        buf = io.BytesIO()
+        doc = Document()
+        style = doc.styles["Normal"]
+        style.font.name = "Courier New"
+        for part in final_text.split("\n"):
+            doc.add_paragraph(part)
+        doc.save(buf)
+        st.download_button(
+            "⬇️ Download DOCX",
+            data=buf.getvalue(),
+            file_name="laporan_pasien.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True
+        )
