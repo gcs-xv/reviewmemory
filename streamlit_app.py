@@ -111,16 +111,29 @@ def extract_period_date_from_text(text: str):
     except Exception:
         return None
 
+# ======= FIX: replace_gigi aman dari PatternError =======
 def replace_gigi(text: str, gigi: str | None) -> str:
-    if not (gigi and str(gigi).strip()): return text
+    if not (gigi and str(gigi).strip()):
+        return text
     gigi_val = str(gigi).strip()
-    return re.sub(r"(?i)(\\bgigi\\s*)xx\\b", lambda m: m.group(1) + gigi_val, text)
+    # gunakan lambda supaya tidak dianggap group reference (\1) di repl
+    return re.sub(r"(?i)(\bgigi\s*)xx\b", lambda m: m.group(1) + gigi_val, text)
 
 def is_impaksi_tooth(gigi: str | None) -> bool:
-    if not gigi: return False
+    if not gigi:
+        return False
     s = re.sub(r"\D", "", str(gigi))
     return bool(re.fullmatch(r"\d{2}", s)) and s.endswith("8")
 
+def _operator_prefixed(op_name: str) -> str:
+    s = (op_name or "").strip()
+    if not s:
+        return ""
+    # kalau user sudah tulis dr./drg. biarkan; selain itu auto-prefix "drg. "
+    if re.match(r"(?i)\s*(dr\.?\s*)?drg\.", s) or re.match(r"(?i)^dr\.", s):
+        return _fix_drg_lower(s)
+    return f"drg. {s}"
+    
 def _clean_slash_choices(txt: str, rm_impaksi_odonto: bool) -> str:
     if not txt: return txt
     parts = [p.strip() for p in re.split(r"\s*/\s*", txt)]
@@ -238,21 +251,19 @@ def _operator_prefixed(op_name: str) -> str:
         return _fix_drg_lower(s)
     return f"drg. {s}"  # auto-prefix
 
-
 def build_block_with_meta(no, row, visit_key, base_date):
     """
     Kunjungan 1:
-        - Diagnosa: kosong
-        - Tindakan: [Konsultasi, Periapikal X-ray gigi G / OPG X-Ray]
-        - Kontrol: Pro <ekstraksi|odontektomi> gigi G (H+7 dari hari ini)
+      - Diagnosa: (kosong)
+      - Tindakan: Konsultasi + Periapikal X-ray gigi G / OPG
+      - Kontrol : H+7 dari HARI INI (bukan PERIODE), pilih 'ekstraksi' vs 'odontektomi' sesuai impaksi
     Kunjungan 2:
-        - Impaksi(..8): Diagnosa Impaksi gigi G..., Tindakan Odontektomi gigi G
-        - Non-impaksi : Diagnosa Gangren...,       Tindakan Ekstraksi gigi G
-        - Kontrol POD IV via compute_kontrol_text(base PERIODE)
+      - Impaksi(..8): Diagnosa 'Impaksi...', Tindakan 'Odontektomi...'
+      - Non-impaksi : Diagnosa 'Gangren...',  Tindakan 'Ekstraksi...'
+      - Kontrol POD IV via PERIODE
     Kunjungan 3/4/5:
-        - Diagnosa = POD {III|VII|XIV} <Ekstraksi|Odontektomi> gigi G
-        - Tindakan sesuai template
-        - Kontrol sesuai template POD (base PERIODE)
+      - Diagnosa = POD {III|VII|XIV} {Ekstraksi|Odontektomi} gigi G
+      - Tindakan sesuai template, Kontrol via PERIODE (POD VII / XIV / -)
     """
     tpl_key = normalize_visit(visit_key or row.get("visit") or "(Pilih)")
     g_raw = (row.get("gigi") or "").strip()
@@ -269,7 +280,7 @@ def build_block_with_meta(no, row, visit_key, base_date):
     L = LABELS
     lines = []
 
-    # Tambahkan judul Kunjungan X di atas nomor
+    # Tulis judul "Kunjungan X" di atas nomor
     if tpl_key.lower().startswith("kunjungan"):
         lines.append(tpl_key)
 
@@ -287,6 +298,7 @@ def build_block_with_meta(no, row, visit_key, base_date):
             "Konsultasi",
             f"Periapikal X-ray gigi {tooth} / OPG X-Ray",
         ]
+        # H+7 dari hari ini
         hplus = (date.today() + timedelta(days=7)).strftime("%d/%m/%Y")
         op_lower = "odontektomi" if imp else "ekstraksi"
         kontrol_txt = f"Pro {op_lower} gigi {tooth} dalam lokal anestesi ({hplus})"
@@ -316,11 +328,16 @@ def build_block_with_meta(no, row, visit_key, base_date):
         kontrol_txt = "-"
 
     else:
+        # fallback ke template lama (kalau ada)
         tpl = VISIT_TEMPLATES.get(tpl_key, VISIT_TEMPLATES["(Pilih)"])
         diagnosa = replace_gigi(tpl["diagnosa"], tooth)
         tlist = [replace_gigi(t, tooth) for t in tpl["tindakan"]]
         kontrol = replace_gigi(tpl["kontrol"], tooth)
-        diagnosa, tlist, kontrol = filter_for_tooth(diagnosa, tlist, kontrol, tooth)
+        # bersihkan opsi impaksi utk non-8
+        if not imp:
+            tlist = [t for t in tlist if not re.search(r"(?i)\bodontektomi\b|\bopen\s+methode\b", t)]
+            diagnosa = re.sub(r"(?i).*\bimpaksi\b.*?(?:/|$)", "", diagnosa).strip(" /")
+            kontrol  = re.sub(r"(?i).*\bodontektomi\b.*?(?:/|$)", "", kontrol).strip(" /")
         diagnosa_txt = diagnosa
         tindakan_list = tlist
         kontrol_txt = compute_kontrol_text(kontrol, diagnosa_txt, base_date) if kontrol else ""
@@ -340,9 +357,8 @@ def build_block_with_meta(no, row, visit_key, base_date):
     lines.append(f"{L['opr']}{operator}")
 
     konsul_flag = any(re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", t) for t in tindakan_list)
-
     return "\n".join(lines), tindakan_list, konsul_flag
-
+    
 # =========================================================
 # Parser PDF (tetap)
 # =========================================================
