@@ -581,7 +581,9 @@ def _compute_rows_to_save(all_rows, reviewer_name):
         st_state = st.session_state.per_patient.get(rm_key)
         if not st_state:
             continue
-        block_nonempty = bool((st_state.get("block") or "").strip())
+        live_key = f"block_{rr['No. RM']}_{st_state.get('no', rr.get('No.', 0))}"
+        live_text = st.session_state.get(live_key, st_state.get("block") or "")
+        block_nonempty = bool(str(live_text).strip())
         reviewed_ok = (
             str(st_state.get("visit","")).lower().startswith("kunjungan")
             and (str(st_state.get("telp","")).strip() != "" or str(st_state.get("operator","")).strip() != "")
@@ -591,7 +593,7 @@ def _compute_rows_to_save(all_rows, reviewer_name):
                 "rm": rm_key,
                 "checked": True,
                 "reviewed_by": (reviewer_name or None),
-                "block_text": st_state["block"],
+                "block_text": live_text,
                 "visit": st_state.get("visit"),
                 "gigi": st_state.get("gigi"),
                 "telp": st_state.get("telp"),
@@ -710,6 +712,8 @@ if uploaded_bytes is not None:
                             "last_sig": None,
                             "db_updated_at": str(saved.get("updated_at") or "")
                         }
+                        st.session_state.per_patient[str(rm_k)]["force_load_from_db"] = True
+                        st.session_state.per_patient[str(rm_k)]["manually_touched"] = True
                         pulled += 1
                         continue
 
@@ -719,6 +723,7 @@ if uploaded_bytes is not None:
                     st_state["operator"] = saved.get("operator") or st_state.get("operator") or ""
                     if saved.get("block_text"):
                         st_state["block"] = saved["block_text"]
+                        st_state["force_load_from_db"] = True
                     st_state["manually_touched"] = True
                     st_state["last_sig"] = None
                     st_state["db_updated_at"] = str(saved.get("updated_at") or "")
@@ -964,15 +969,24 @@ if uploaded_bytes is not None:
         # Kunci session_state untuk textarea pasien ini
         ta_key = f"block_{patient_key}"
 
-        # Inisialisasi pertama atau reset jika form berubah:
+        # If Update() requested DB text to be injected into the textarea, do it now
+        if state.get("force_load_from_db"):
+            saved_db = review_map.get(rm, {})
+            saved_text = (saved_db.get("block_text") or "").strip()
+            if saved_text:
+                st.session_state[ta_key] = saved_text
+                state["block"] = saved_text
+            state["force_load_from_db"] = False
+
+        # Prefer DB-saved text if available and user hasn't manually edited in this session
+        saved_db = review_map.get(rm, {})
+        saved_text = (saved_db.get("block_text") or "").strip()
+
         if ta_key not in st.session_state:
-            # pertama kali render → isi dengan default hasil builder
-            st.session_state[ta_key] = default_block
+            st.session_state[ta_key] = saved_text if (saved_text and not state.get("manually_touched", False)) else default_block
         elif state.get("last_sig") != current_sig:
-            # form berubah → update preview HANYA jika user belum mengedit manual
             if not state.get("manually_touched", False):
-                st.session_state[ta_key] = default_block
-            # kalau sudah manual_touched, jangan timpa
+                st.session_state[ta_key] = saved_text if saved_text else default_block
 
         # Render textarea TANPA value=..., cukup pakai key (ambil dari session_state)
         edited_text = st.text_area(
@@ -998,11 +1012,13 @@ if uploaded_bytes is not None:
         state["prev_block"] = edited_text
         state["prev_sig"]   = current_sig
         state["last_sig"]   = current_sig
+        state["force_load_from_db"] = False
 
         if changed:
             try:
                 payload = _compute_rows_to_save(rows, st.session_state.get("reviewer"))
                 upsert_reviews(supabase, per_str_db, uploaded_name, payload)
+                state["db_updated_at"] = str(int(time.time()))
                 # build summary text dari blok-blok yang non-empty saat ini
                 _combined = []
                 for _rm, _st in st.session_state.per_patient.items():
