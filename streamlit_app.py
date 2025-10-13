@@ -273,35 +273,16 @@ def build_block_with_meta(no, row, visit_key, base_date):
     tindakan = list(tpl["tindakan"])
     kontrol  = tpl["kontrol"]
 
-    # Kunjungan 1 override: diagnosa kosong, tindakan konsultasi + x-ray, kontrol = H+7 dari HARI INI,
-# pakai 'ekstraksi' untuk non-impaksi, 'odontektomi' untuk impaksi
-if tpl_key == "Kunjungan 1":
-    imp = is_impaksi_tooth((row.get("gigi") or "").strip())
-    tindakan = [
-        "Konsultasi",
-        f"Periapikal X-ray gigi { (row.get('gigi') or 'xx').strip() } / OPG X-Ray",
-    ]
-    diagnosa = ""  # sesuai spes kamu
-    hplus = (date.today() + timedelta(days=7)).strftime("%d/%m/%Y")
-    op_lower = "odontektomi" if imp else "ekstraksi"
-    kontrol  = f"Pro {op_lower} gigi { (row.get('gigi') or 'xx').strip() } dalam lokal anestesi ({hplus})"
-
     gigi = (row.get("gigi") or "").strip()
-
-    # 1) Isi 'xx' → angka gigi
     diagnosa = replace_gigi(diagnosa, gigi)
     tindakan = [replace_gigi(t, gigi) for t in tindakan]
     kontrol  = replace_gigi(kontrol,  gigi)
-
-    # 2) Filter impaksi/odontektomi sesuai nomor gigi
     diagnosa, tindakan, kontrol = filter_for_tooth(diagnosa, tindakan, kontrol, gigi)
-
-    # 3) Hitung tanggal kontrol dari POD
     kontrol = compute_kontrol_text(kontrol, diagnosa, base_date)
 
     dpjp_full = _fix_drg_lower((row.get("DPJP (auto)") or "").strip())
     telp = (row.get("telp") or "").strip()
-    operator = _operator_prefixed((row.get("operator") or "").strip()) if (row.get("operator") or "").strip() else ""
+    operator = (row.get("operator") or "").strip()
 
     L = LABELS
     lines = []
@@ -309,22 +290,15 @@ if tpl_key == "Kunjungan 1":
     lines.append(f"{L['tgl']}{row['Tgl Lahir']}")
     lines.append(f"{L['rm']}{fmt_rm(row['No. RM'])}")
     lines.append(f"{L['diag']}{diagnosa}")
-
-    if tpl_key == "Kunjungan 3" and len(tindakan) == 1:
-        lines.append(f"{L['tind']}{tindakan[0]}")
-    else:
-        lines.append(f"{L['tind']}")
-        for t in tindakan:
-            lines.append(f"    * {t}")
-
+    lines.append(f"{L['tind']}{tindakan[0] if len(tindakan)==1 else tindakan}")
     lines.append(f"{L['kont']}{kontrol}")
     lines.append(f"{L['dpjp']}{dpjp_full}")
     lines.append(f"{L['telp']}{telp}")
-    lines.append(f"{L['opr']}{operator}")
+    lines.append(f"{L['opr']}drg. {operator if operator and not operator.lower().startswith('drg') else operator}")
 
     konsul_flag = any(re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", t) for t in tindakan)
     return "\n".join(lines), tindakan, konsul_flag
-
+    
 # ===== PDF Parser =====
 
 def parse_pdf_to_rows_and_period_bytes(pdf_bytes: bytes):
