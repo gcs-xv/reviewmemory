@@ -607,26 +607,44 @@ if uploaded_bytes is not None:
     supabase = get_supabase()
     review_map = load_review_map(supabase, per_str_db)
 
-    # ===== Sidebar auto-sync (simple meta refresh; no extra packages) =====
+    # ===== Sidebar actions (no auto-refresh) =====
     with st.sidebar:
-        st.markdown("## 🔄 Auto-sync")
-        auto_sync = st.checkbox("Aktifkan auto-sync tiap 10 detik", value=False, key="auto_sync_toggle")
-        if auto_sync:
-            # Simple meta refresh to reload page every 10s so shared changes are seen
-            st.markdown('<meta http-equiv="refresh" content="10">', unsafe_allow_html=True)
-        st.caption("Saat aktif, halaman akan auto-refresh setiap 10 detik untuk menarik perubahan dari Supabase. File yang di-upload tidak hilang saat refresh.")
-        st.markdown("---")
-        st.markdown("## 💾 Simpan")
-        if st.button("Simpan blok (shared)", key="sb_save_blocks", use_container_width=True, type="primary"):
+        st.markdown("## ⚙️ Aksi")
+        st.caption("Ingat: setelah mengisi, **klik Simpan**. Untuk menarik perubahan dari teman, klik **Update**.")
+
+        if st.button("🔄 Update (ambil dari Supabase)", key="sb_pull", use_container_width=True):
             try:
+                # ambil ulang dari DB dan merge ke state saat ini (tanpa kehilangan edit manual)
+                latest_map = load_review_map(supabase, per_str_db)
+                pulled = 0
+                for rm_k, saved in latest_map.items():
+                    st_state = st.session_state.per_patient.get(str(rm_k))
+                    if not st_state:
+                        continue
+                    # hanya overwrite field kosong / belum disentuh, atau kalau ada block_text dari DB
+                    if saved.get("visit") and not st_state.get("manually_touched", False):
+                        st_state["visit"] = normalize_visit(saved.get("visit"))
+                    if saved.get("gigi") and not st_state.get("manually_touched", False):
+                        st_state["gigi"] = saved.get("gigi")
+                    if saved.get("telp") and not st_state.get("manually_touched", False):
+                        st_state["telp"] = saved.get("telp")
+                    if saved.get("operator") and not st_state.get("manually_touched", False):
+                        st_state["operator"] = saved.get("operator")
+                    if saved.get("block_text"):
+                        st_state["block"] = saved["block_text"]
+                    st_state["db_updated_at"] = str(saved.get("updated_at") or "")
+                    pulled += 1
+                st.success(f"Update selesai. {pulled} pasien disinkron dari Supabase.")
+            except Exception as e:
+                st.error(f"Gagal update dari Supabase: {e}")
+
+        if st.button("💾 Simpan (blok & rekap harian)", key="sb_save_all", use_container_width=True, type="primary"):
+            try:
+                # 1) simpan blok-blok reviewed (shared)
                 payload = _compute_rows_to_save(rows, st.session_state.get("reviewer"))
                 upsert_reviews(supabase, per_str_db, uploaded_name, payload)
-                st.success(f"Tersimpan {len(payload)} blok reviewed (shared).")
-            except Exception as e:
-                st.error(f"Gagal simpan blok: {e}")
-        if st.button("Simpan rekap harian (Supabase)", key="sb_save_rekap", use_container_width=True):
-            try:
-                # final_text akan dihitung ulang di bawah; untuk sidebar, hitung cepat di sini juga
+
+                # 2) susun rekap harian dari blok yang ada di state saat ini
                 _combined = []
                 _konsul = 0
                 for _rm, _st in st.session_state.per_patient.items():
@@ -664,13 +682,15 @@ if uploaded_bytes is not None:
                 ]
                 _final_text = "\n".join(header_lines) + _body + ("\n" + "\n".join(_footer))
                 upsert_summary(supabase, per_str_db, _final_text)
-                st.success(f"Rekap {per_str_show} tersimpan & terbagi ke semua user.")
+
+                st.success(f"Sukses simpan: {len(payload)} blok + rekap harian.")
             except Exception as e:
-                st.error(f"Gagal simpan rekap: {e}")
+                st.error(f"Gagal simpan: {e}")
 
     st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded_name}**")
+    st.info("✅ Setelah isi **Kunjungan/Gigi/Telp/Operator**, klik **Simpan (blok & rekap)** di sidebar. Untuk melihat perubahan dari rekan, klik **Update** di sidebar.")
 
-    reviewer = st.text_input("Nama reviewer (opsional)")
+    reviewer = st.text_input("Nama reviewer (opsional)") or ""
     st.session_state["reviewer"] = reviewer
 
     # ===== render blok per pasien
@@ -846,12 +866,6 @@ if uploaded_bytes is not None:
 
     st.text_area("Teks gabungan", final_text, height=420)
 
-    if st.button("💾 Simpan rekap harian (Supabase)", use_container_width=True):
-        try:
-            upsert_summary(supabase, per_str_db, final_text)
-            st.success(f"Rekap {per_str_show} tersimpan & terbagi ke semua user.")
-        except Exception as e:
-            st.error(f"Gagal simpan rekap: {e}")
 
     colD1, colD2 = st.columns(2)
     with colD1:
@@ -882,6 +896,9 @@ if uploaded_bytes is not None:
 elif uploaded_bytes is None:
     with st.expander("📅 Lihat data tersimpan berdasarkan tanggal (tanpa upload)", expanded=True):
         pick_date = st.date_input("Pilih tanggal PERIODE", value=date.today())
+        if st.button("🔄 Update dari Supabase", use_container_width=True):
+            # trigger a no-op rerun; the user will click 'Muat data tersimpan' di bawah untuk menampilkan
+            st.experimental_rerun()
         if st.button("Muat data tersimpan", use_container_width=True):
             per_date = pick_date
             hari_str = HARI_ID[per_date.weekday()]
