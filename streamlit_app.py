@@ -891,7 +891,7 @@ if uploaded_bytes is not None:
                 state["db_updated_at"] = db_ts
 
         # Reorder: header first
-		wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if (
+wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if (
     	str(state["visit"]).lower().startswith("kunjungan")
     	and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
 	) else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"        st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
