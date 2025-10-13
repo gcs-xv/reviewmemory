@@ -181,21 +181,6 @@ def _operator_prefixed(op_name: str) -> str:
         return re.sub(r'(?i)\bDRG\.', 'drg.', s)
     return f"drg. {s}"
 
-    offset = pod_k - pod_d
-    if offset < 0: offset = 0
-    target = base_date + timedelta(days=offset)
-
-    if pod_k == 3 and target.weekday() == 6:  # Sunday
-        pod_k = 4
-        target = target + timedelta(days=1)
-        kontrol_tpl = re.sub(r"\bPOD\s+[IVXLC]+\b", "POD IV", kontrol_tpl, flags=re.IGNORECASE)
-
-    date_str = target.strftime("%d/%m/%Y")
-    if re.search(r"\([^)]*\)", kontrol_tpl):
-        return re.sub(r"\([^)]*\)", f"({date_str})", kontrol_tpl)
-    else:
-        return f"{kontrol_tpl} ({date_str})"
-
 # =========================================================
 # Template dasar (dipakai fallback)
 # =========================================================
@@ -498,7 +483,6 @@ combined_blocks = []
 konsultasi_count = 0
 
 # style hijau (selalu hijau untuk blok yang tampil = sudah reviewed otomatis)
-GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
 
 # urutkan by No.
 df = pd.DataFrame(rows).sort_values("No.")
@@ -519,8 +503,16 @@ for _, r in df.iterrows():
     })
     state = st.session_state.per_patient[rm]
 
+    # --- reviewed otomatis bila kunjungan valid + gigi terisi + (telp atau operator) ---
+    auto_ok = (
+        str(state["visit"]).lower().startswith("kunjungan")
+        and str(state["gigi"]).strip() != ""
+        and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
+    )
+    wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if auto_ok else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
+    st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
+
     # header identitas
-    st.markdown(f'<div style="background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px">', unsafe_allow_html=True)
     st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
     st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
 
@@ -535,15 +527,9 @@ for _, r in df.iterrows():
     with v4:
         state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
 
-    # --- reviewed otomatis bila kunjungan valid + gigi terisi + (telp atau operator) ---
-    auto_ok = (
-        str(state["visit"]).lower().startswith("kunjungan")
-        and str(state["gigi"]).strip() != ""
-        and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
-    )
-
     # kalau belum lengkap: JANGAN render blok sama sekali
     if not auto_ok:
+        st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("")  # spacer tipis biar rapi antar baris
         continue
 
@@ -567,7 +553,6 @@ for _, r in df.iterrows():
         state["block"] = default_block
 
     # render blok dengan background hijau penuh
-    st.markdown(f'<div style="{GREEN}">', unsafe_allow_html=True)
     edited_text = st.text_area(
         "Blok preview (boleh revisi manual)",
         value=state["block"],
@@ -586,67 +571,66 @@ for _, r in df.iterrows():
         konsultasi_count += 1
 
     st.markdown("")  # spacer
-    
-    # ===== gabungan + rekap
-    total_reviewed = len(combined_blocks)
-    tindakan_count = max(total_reviewed - konsultasi_count, 0)
 
-    st.markdown("---")
-    st.markdown("### Rekap & Gabungan (format beku)")
+# ===== gabungan + rekap (render sekali di paling bawah) =====
+total_reviewed = len(combined_blocks)
+tindakan_count = max(total_reviewed - konsultasi_count, 0)
 
-    header_lines = [
-        "Review jumlah pasien Poli Bedah Mulut dan Maksilofasial RSGMP UNHAS, ",
-        f"{hari_str}, {per_str_show}",
-        "",
-        f"Jumlah pasien     : {total_reviewed} Pasien",
-        f"Tindakan              : {tindakan_count} Pasien",
-        f"Konsultasi\t      : {konsultasi_count} Pasien",
-        f"Terjaring GA\t      : xx Pasien",
-        f"Baksos                 : xx Pasien",
-        f"VIP                        : -",
-        "",
-        "-----------------------------------------------------",
-        "",
-        "POLI INTEGRASI",
-        "",
-    ]
-    body_text = "\n\n".join(combined_blocks) if combined_blocks else ""
-    footer_lines = [
-        "",
-        "------------------------------------------------------",
-        "",
-        f"{hari_str}, {per_str_show}",
-        "",
-        "Chief jaga poli :",
-        "drg. xx",
-    ]
-    final_text = "\n".join(header_lines) + body_text + ("\n" + "\n".join(footer_lines))
+st.markdown("---")
+st.markdown("### Rekap & Gabungan (format beku)")
 
-    st.text_area("Teks gabungan", final_text, height=420)
+header_lines = [
+    "Review jumlah pasien Poli Bedah Mulut dan Maksilofasial RSGMP UNHAS, ",
+    f"{hari_str}, {per_str_show}",
+    "",
+    f"Jumlah pasien     : {total_reviewed} Pasien",
+    f"Tindakan              : {tindakan_count} Pasien",
+    f"Konsultasi\t      : {konsultasi_count} Pasien",
+    f"Terjaring GA\t      : xx Pasien",
+    f"Baksos                 : xx Pasien",
+    f"VIP                        : -",
+    "",
+    "-----------------------------------------------------",
+    "",
+    "POLI INTEGRASI",
+    "",
+]
+body_text = "\n\n".join(combined_blocks) if combined_blocks else ""
+footer_lines = [
+    "",
+    "------------------------------------------------------",
+    "",
+    f"{hari_str}, {per_str_show}",
+    "",
+    "Chief jaga poli :",
+    "drg. xx",
+]
+final_text = "\n".join(header_lines) + body_text + ("\n" + "\n".join(footer_lines))
 
-    # Download
-    colD1, colD2 = st.columns(2)
-    with colD1:
-        st.download_button(
-            "⬇️ Download TXT",
-            data=final_text.encode("utf-8"),
-            file_name="laporan_pasien.txt",
-            mime="text/plain",
-            use_container_width=True
-        )
-    with colD2:
-        # DOCX monospace agar spasi tetap
-        buf = io.BytesIO()
-        doc = Document()
-        style = doc.styles["Normal"]
-        style.font.name = "Courier New"
-        for part in final_text.split("\n"):
-            doc.add_paragraph(part)
-        doc.save(buf)
-        st.download_button(
-            "⬇️ Download DOCX",
-            data=buf.getvalue(),
-            file_name="laporan_pasien.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True
-        )
+st.text_area("Teks gabungan", final_text, height=420)
+
+colD1, colD2 = st.columns(2)
+with colD1:
+    st.download_button(
+        "⬇️ Download TXT",
+        data=final_text.encode("utf-8"),
+        file_name="laporan_pasien.txt",
+        mime="text/plain",
+        use_container_width=True
+    )
+with colD2:
+    # DOCX monospace agar spasi tetap
+    buf = io.BytesIO()
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Courier New"
+    for part in final_text.split("\n"):
+        doc.add_paragraph(part)
+    doc.save(buf)
+    st.download_button(
+        "⬇️ Download DOCX",
+        data=buf.getvalue(),
+        file_name="laporan_pasien.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        use_container_width=True
+    )
