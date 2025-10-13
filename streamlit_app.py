@@ -614,27 +614,43 @@ if uploaded_bytes is not None:
 
         if st.button("🔄 Update (ambil dari Supabase)", key="sb_pull", use_container_width=True):
             try:
-                # ambil ulang dari DB dan merge ke state saat ini (tanpa kehilangan edit manual)
                 latest_map = load_review_map(supabase, per_str_db)
                 pulled = 0
                 for rm_k, saved in latest_map.items():
                     st_state = st.session_state.per_patient.get(str(rm_k))
                     if not st_state:
+                        # kalau pasien belum ada di state (mis. urutan berubah), buat shell state
+                        st.session_state.per_patient[str(rm_k)] = {
+                            "visit": normalize_visit(saved.get("visit") or "(Pilih)"),
+                            "gigi": saved.get("gigi") or "",
+                            "telp": saved.get("telp") or "",
+                            "operator": saved.get("operator") or "",
+                            "block": saved.get("block_text") or "",
+                            "manually_touched": False,
+                            "name": "",
+                            "dob": "",
+                            "dpjp_auto": "",
+                            "no": 0,
+                            "last_sig": None,
+                            "db_updated_at": str(saved.get("updated_at") or "")
+                        }
+                        pulled += 1
                         continue
-                    # hanya overwrite field kosong / belum disentuh, atau kalau ada block_text dari DB
-                    if saved.get("visit") and not st_state.get("manually_touched", False):
-                        st_state["visit"] = normalize_visit(saved.get("visit"))
-                    if saved.get("gigi") and not st_state.get("manually_touched", False):
-                        st_state["gigi"] = saved.get("gigi")
-                    if saved.get("telp") and not st_state.get("manually_touched", False):
-                        st_state["telp"] = saved.get("telp")
-                    if saved.get("operator") and not st_state.get("manually_touched", False):
-                        st_state["operator"] = saved.get("operator")
+
+                    # Overwrite TANPA syarat (mereplikasi efek refresh+upload ulang)
+                    st_state["visit"] = normalize_visit(saved.get("visit") or st_state.get("visit") or "(Pilih)")
+                    st_state["gigi"] = saved.get("gigi") or st_state.get("gigi") or ""
+                    st_state["telp"] = saved.get("telp") or st_state.get("telp") or ""
+                    st_state["operator"] = saved.get("operator") or st_state.get("operator") or ""
                     if saved.get("block_text"):
                         st_state["block"] = saved["block_text"]
+                    st_state["manually_touched"] = False
+                    st_state["last_sig"] = None
                     st_state["db_updated_at"] = str(saved.get("updated_at") or "")
                     pulled += 1
+
                 st.success(f"Update selesai. {pulled} pasien disinkron dari Supabase.")
+                st.experimental_rerun()
             except Exception as e:
                 st.error(f"Gagal update dari Supabase: {e}")
 
@@ -748,13 +764,17 @@ if uploaded_bytes is not None:
         # input mini
         v1, v2, v3, v4 = st.columns(4)
         with v1:
-            state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{patient_key}"))
+            v_in = st.text_input("Kunjungan", value=state.get("visit",""), key=f"visit_{patient_key}")
+            state["visit"] = normalize_visit(v_in)
         with v2:
-            state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{patient_key}")
+            g_in = st.text_input("Gigi", value=state.get("gigi",""), key=f"gigi_{patient_key}")
+            state["gigi"] = g_in
         with v3:
-            state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{patient_key}")
+            t_in = st.text_input("Telp", value=state.get("telp",""), key=f"telp_{patient_key}")
+            state["telp"] = t_in
         with v4:
-            state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{patient_key}")
+            o_in = st.text_input("Operator", value=state.get("operator",""), key=f"opr_{patient_key}")
+            state["operator"] = o_in
 
         # Recompute reviewed status AFTER inputs, then open wrapper and render header
         auto_ok = (
@@ -788,18 +808,18 @@ if uploaded_bytes is not None:
             state["no"], rdict, state["visit"], per_date
         )
 
-        # signature input saat ini
+        # signature input saat ini (dipakai untuk mendeteksi perubahan form)
         current_sig = (
-            normalize_visit(state["visit"]),
-            str(state["gigi"]).strip(),
-            str(state["telp"]).strip(),
-            str(state["operator"]).strip(),
+            normalize_visit(state.get("visit","")),
+            str(state.get("gigi","")).strip(),
+            str(state.get("telp","")).strip(),
+            str(state.get("operator","")).strip(),
         )
 
-        # set awal atau auto-overwrite bila input berubah dan user belum edit textarea
-        if state["block"] is None:
+        # Selalu sinkronkan preview jika user belum mengedit manual
+        if state.get("block") is None:
             state["block"] = default_block
-        elif (state["last_sig"] != current_sig) and (not state["manually_touched"]):
+        elif (state.get("last_sig") != current_sig) and (not state.get("manually_touched", False)):
             state["block"] = default_block
 
         # render textarea dan deteksi apakah user benar2 mengedit manual
@@ -814,9 +834,12 @@ if uploaded_bytes is not None:
 
         state["manually_touched"] = (edited_text != old_text)
         state["block"] = edited_text
+        # perbarui signature terakhir setelah kemungkinan perubahan
+        state["last_sig"] = current_sig
+        state["manually_touched"] = state.get("manually_touched", False) or (edited_text != old_text)
 
         # --- Auto-save & auto-update setiap kali field berubah ---
-        changed = state["manually_touched"] or (state["last_sig"] != current_sig)
+        changed = state.get("manually_touched", False) or (state.get("last_sig") != current_sig)
         if changed:
             try:
                 payload = _compute_rows_to_save(rows, st.session_state.get("reviewer"))
@@ -831,7 +854,6 @@ if uploaded_bytes is not None:
             except Exception as e:
                 st.warning(f"Gagal auto-save: {e}")
 
-        state["last_sig"] = current_sig
 
         # akumulasi gabungan & hitung konsultasi
         combined_blocks.append(state["block"])
