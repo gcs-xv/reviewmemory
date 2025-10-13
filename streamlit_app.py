@@ -947,37 +947,30 @@ if uploaded_bytes is not None:
             # Tambahkan marker agar tidak trigger manual touched pada rerun ini
             state["_just_injected"] = True
 
-saved_text = ""
-if ta_key not in st.session_state:
-    if saved:
-        saved_text = (saved.get("block_text") or "").strip()
-    if saved_text:
-        # init dari DB -> anggap manual (jangan overwrite pas form berubah)
-        st.session_state[ta_key] = saved_text
-        state["manually_touched"] = True
-        state["last_auto_block"] = None
-    else:
-        # init dari auto template
-        st.session_state[ta_key] = default_block
-        state["manually_touched"] = False
-        state["last_auto_block"] = default_block
-        # init dari DB -> anggap manual (jangan overwrite pas form berubah)
-        st.session_state[ta_key] = saved_text
-        state["manually_touched"] = True
-        state["last_auto_block"] = None
-    else:
-        # init dari auto template
-        st.session_state[ta_key] = default_block
-        state["manually_touched"] = False
-        state["last_auto_block"] = default_block
-        elif state.get("last_sig") != current_sig:
-            # form berubah -> overwrite HANYA jika textarea masih sama dengan auto block sebelumnya
-            current_text = st.session_state.get(ta_key, "")
-            if current_text == (state.get("last_auto_block") or ""):
+        # --- Initialize textarea content (from DB if available, else auto) and handle auto-overwrite on form change
+        saved_text = ""
+        if ta_key not in st.session_state:
+            if saved:
+                saved_text = (saved.get("block_text") or "").strip()
+            if saved_text:
+                # init dari DB -> anggap manual (jangan overwrite pas form berubah)
+                st.session_state[ta_key] = saved_text
+                state["manually_touched"] = True
+                state["last_auto_block"] = None
+            else:
+                # init dari auto template
                 st.session_state[ta_key] = default_block
-                state["last_auto_block"] = default_block
                 state["manually_touched"] = False
-            # kalau sudah beda (berarti user pernah edit manual), biarkan apa adanya
+                state["last_auto_block"] = default_block
+        else:
+            if state.get("last_sig") != current_sig:
+                # form berubah -> overwrite HANYA jika textarea masih sama dengan auto block sebelumnya
+                current_text = st.session_state.get(ta_key, "")
+                if current_text == (state.get("last_auto_block") or ""):
+                    st.session_state[ta_key] = default_block
+                    state["last_auto_block"] = default_block
+                    state["manually_touched"] = False
+                # kalau sudah beda (berarti user pernah edit manual), biarkan apa adanya
 
         # Simpan nilai sebelumnya sebelum render textarea
         prev_text_value = st.session_state.get(ta_key)
