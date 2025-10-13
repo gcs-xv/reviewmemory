@@ -680,44 +680,8 @@ if uploaded_bytes is not None:
     # ===== Sidebar actions (no auto-refresh) =====
     with st.sidebar:
         st.markdown("## ⚙️ Aksi")
-        # Auto-update controls
-        auto_on = st.checkbox("Auto-update berkala", value=st.session_state.get("auto_on", False), key="auto_on")
-        auto_int = st.number_input("Interval (detik)", min_value=5, max_value=120, value=int(st.session_state.get("auto_int", 15)), key="auto_int", help="Frekuensi ambil data dari Supabase secara otomatis.")
 
-        # If enabled, trigger a lightweight rerun every N seconds (does not block UI)
-        if auto_on:
-            components.html(
-                f"""
-                <script>
-                setTimeout(function(){{
-                    parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:rerun'}}, '*');
-                }}, {int(auto_int) * 1000});
-                </script>
-                """,
-                height=0
-            )
-
-        st.caption("🔄 Perubahan disimpan otomatis. Kamu bisa mengaktifkan **Auto-update berkala** di atas. Tombol di bawah hanya cadangan bila koneksi bermasalah.")
-
-        # Always-visible jump panel after auto-update controls and caption
-        st.markdown("### ⏭️ Lompat ke nomor (belum direview)")
-        if not not_reviewed_list:
-            st.caption("Tidak ada yang tersisa 🎉")
-        else:
-            # compact grid of small buttons
-            nums = [str(it["no"]) for it in not_reviewed_list]
-            # render in rows of 10 small buttons
-            row_size = 10
-            for i in range(0, len(nums), row_size):
-                cols = st.columns(row_size, gap="small")
-                for j, num in enumerate(nums[i:i+row_size]):
-                    with cols[j]:
-                        if st.button(num, key=f"jumpnum_{num}", help=f"Lompat ke nomor {num}", use_container_width=True):
-                            target = st.session_state.get("__section_ids_no", {}).get(num, f"sec_no_{num}")
-                            st.session_state['scroll_to'] = target
-                            st.session_state['__scroll_ts'] = time.time()
-                            st.rerun()
-
+        # --- 1) UPDATE di paling atas ---
         if st.button("🔄 Update (ambil dari Supabase)", key="sb_pull", use_container_width=True):
             try:
                 latest_map = load_review_map(supabase, per_str_db)
@@ -725,7 +689,6 @@ if uploaded_bytes is not None:
                 for rm_k, saved in latest_map.items():
                     st_state = st.session_state.per_patient.get(str(rm_k))
                     if not st_state:
-                        # kalau pasien belum ada di state (mis. urutan berubah), buat shell state
                         st.session_state.per_patient[str(rm_k)] = {
                             "visit": normalize_visit(saved.get("visit") or "(Pilih)"),
                             "gigi": saved.get("gigi") or "",
@@ -743,7 +706,6 @@ if uploaded_bytes is not None:
                         pulled += 1
                         continue
 
-                    # Overwrite TANPA syarat (mereplikasi efek refresh+upload ulang)
                     st_state["visit"] = normalize_visit(saved.get("visit") or st_state.get("visit") or "(Pilih)")
                     st_state["gigi"] = saved.get("gigi") or st_state.get("gigi") or ""
                     st_state["telp"] = saved.get("telp") or st_state.get("telp") or ""
@@ -760,13 +722,12 @@ if uploaded_bytes is not None:
             except Exception as e:
                 st.error(f"Gagal update dari Supabase: {e}")
 
+        # --- 2) SIMPAN setelah UPDATE ---
         if st.button("💾 Simpan (blok & rekap harian)", key="sb_save_all", use_container_width=True, type="primary"):
             try:
-                # 1) simpan blok-blok reviewed (shared)
                 payload = _compute_rows_to_save(rows, st.session_state.get("reviewer"))
                 upsert_reviews(supabase, per_str_db, uploaded_name, payload)
 
-                # 2) susun rekap harian dari blok yang ada di state saat ini
                 _combined = []
                 _konsul = 0
                 for _rm, _st in st.session_state.per_patient.items():
@@ -810,12 +771,30 @@ if uploaded_bytes is not None:
                 st.error(f"Gagal simpan: {e}")
 
         st.markdown("---")
-        st.markdown("## 📝 Belum di review")
 
+        # --- 3) AUTO UPDATE setelah Simpan ---
+        auto_on = st.checkbox("Auto-update berkala", value=st.session_state.get("auto_on", False), key="auto_on")
+        auto_int = st.number_input("Interval (detik)", min_value=5, max_value=120, value=int(st.session_state.get("auto_int", 15)), key="auto_int", help="Frekuensi ambil data dari Supabase secara otomatis.")
+        if auto_on:
+            components.html(
+                f"""
+                <script>
+                setTimeout(function(){{
+                    parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:rerun'}}, '*');
+                }}, {int(st.session_state.get("auto_int", 15)) * 1000});
+                </script>
+                """,
+                height=0
+            )
+        st.caption("🔄 Perubahan disimpan otomatis. Tombol di atas adalah cadangan bila koneksi bermasalah.")
+
+        st.markdown("---")
+
+        # --- 4) Belum di review (terakhir) ---
+        st.markdown("## 📝 Belum di review")
         if not not_reviewed_list:
             st.success("Semua pasien sudah direview. Mantap! 🎉")
         else:
-            # Tampilkan daftar ringkas sesuai format diminta
             lines = ["Belum di review :"]
             for item in not_reviewed_list:
                 lines.append(f"{item['no']} {item['rm']} {item['name'].upper()}")
@@ -836,6 +815,31 @@ if uploaded_bytes is not None:
         """,
         unsafe_allow_html=True
     )
+
+    # === Right-side jump panel (sticky) ===
+    jump_nums = [str(it["no"]) for it in not_reviewed_list]
+    right_panel = st.container()
+    with right_panel:
+        cols = st.columns([5,1], gap="large")
+        with cols[1]:
+            st.markdown(
+                "<div style='position:sticky; top:88px; border:1px solid #ddd; border-radius:10px; padding:10px; background:#fafafa'>"
+                "<div style='font-weight:700; margin-bottom:8px;'>⏭️ Lompat ke nomor</div>",
+                unsafe_allow_html=True
+            )
+            if not jump_nums:
+                st.caption("Tidak ada yang tersisa 🎉")
+            else:
+                row_size = 4
+                for i in range(0, len(jump_nums), row_size):
+                    row_cols = st.columns(row_size, gap="small")
+                    for j, num in enumerate(jump_nums[i:i+row_size]):
+                        with row_cols[j]:
+                            if st.button(num, key=f"jumpnum_right_{num}", use_container_width=True):
+                                target = st.session_state.get("__section_ids_no", {}).get(num, f"sec_no_{num}")
+                                st.session_state['scroll_to'] = target
+                                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
     reviewer = st.text_input("Nama reviewer (opsional)") or ""
     st.session_state["reviewer"] = reviewer
@@ -909,7 +913,28 @@ if uploaded_bytes is not None:
                     state["block"] = saved["block_text"]
                 state["db_updated_at"] = db_ts
 
-        # input mini, with clear button at end
+        # Reorder: header first
+        wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if (
+            str(state["visit"]).lower().startswith("kunjungan")
+            and str(state["gigi"]).strip() != ""
+            and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
+        ) else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
+        st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div style="margin-bottom:8px;">
+              <div style="font-weight:900;font-size:1.15rem;color:#0D47A1;letter-spacing:.2px;">
+                {state['no']}. {r['Nama'].upper()}
+              </div>
+              <div style="color:#37474F;margin-top:2px;font-size:0.95rem;">
+                RM {fmt_rm(rm)} • Tgl lahir: {r['Tgl Lahir']} • DPJP: {r['DPJP (auto)']}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # input mini, with clear button at end (now after header)
         v1, v2, v3, v4, v5 = st.columns([1,1,1,1,0.6])
         with v1:
             v_in = st.text_input("Kunjungan", value=state.get("visit",""), key=f"visit_{patient_key}")
@@ -933,45 +958,32 @@ if uploaded_bytes is not None:
                 state["block"] = ""
                 state["manually_touched"] = False
                 state["last_sig"] = None
-                # Upsert only this row so others tidak ikut
                 try:
-                    supabase.table("reviews").upsert({
-                        "periode_date": per_str_db,
-                        "file_name": uploaded_name,
-                        "rm": rm,
-                        "checked": False,
-                        "reviewed_by": (st.session_state.get("reviewer") or None),
-                        "block_text": "",
-                        "visit": "",
-                        "gigi": "",
-                        "telp": "",
-                        "operator": "",
-                    }, on_conflict="periode_date,rm").execute()
+                    upsert_reviews(
+                        supabase,
+                        per_str_db,
+                        uploaded_name,
+                        [{
+                            "rm": rm,
+                            "checked": False,
+                            "reviewed_by": (st.session_state.get("reviewer") or None),
+                            "block_text": "",
+                            "visit": "",
+                            "gigi": "",
+                            "telp": "",
+                            "operator": "",
+                        }]
+                    )
                     st.info("Blok dihapus & disinkronkan.")
                 except Exception as e:
                     st.warning(f"Gagal menghapus blok: {e}")
                 st.rerun()
 
-        # Recompute reviewed status AFTER inputs, then open wrapper and render header
+        # Recompute reviewed status AFTER inputs, then open wrapper and render preview
         auto_ok = (
             str(state["visit"]).lower().startswith("kunjungan")
             and str(state["gigi"]).strip() != ""
             and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
-        )
-        wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if auto_ok else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
-        st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
-        st.markdown(
-            f"""
-            <div style="margin-bottom:8px;">
-              <div style="font-weight:900;font-size:1.15rem;color:#0D47A1;letter-spacing:.2px;">
-                {state['no']}. {r['Nama'].upper()}
-              </div>
-              <div style="color:#37474F;margin-top:2px;font-size:0.95rem;">
-                RM {fmt_rm(rm)} • Tgl lahir: {r['Tgl Lahir']} • DPJP: {r['DPJP (auto)']}
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True
         )
 
         # jika belum lengkap: tutup wrapper & lanjut pasien berikutnya (tidak render textarea)
@@ -1066,7 +1078,6 @@ if uploaded_bytes is not None:
             """,
             height=0,
         )
-        # clear so it doesn't keep scrolling on next rerun
         st.session_state['scroll_to'] = None
 
     # ===== gabungan + rekap (render sekali di paling bawah) =====
