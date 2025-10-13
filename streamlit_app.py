@@ -537,6 +537,14 @@ with st.expander("Catatan & aturan format", expanded=False):
 
 uploaded = st.file_uploader("Upload PDF laporan", type=["pdf"])
 
+# Persist uploaded PDF bytes across reruns (for auto-refresh)
+if uploaded is not None:
+    _file_bytes = uploaded.read()
+    st.session_state["_uploaded_pdf"] = _file_bytes
+    st.session_state["_uploaded_name"] = uploaded.name
+uploaded_bytes = st.session_state.get("_uploaded_pdf")
+uploaded_name = st.session_state.get("_uploaded_name", uploaded.name if uploaded is not None else "")
+
 
 @st.cache_data(show_spinner=False)
 def _parse_cached(pdf_bytes: bytes):
@@ -579,8 +587,9 @@ def _compute_rows_to_save(all_rows, reviewer_name):
 if "per_patient" not in st.session_state:
     st.session_state.per_patient = {}  # rm -> dict(state)
 
-if uploaded is not None:
-    data = uploaded.read()
+if uploaded_bytes is not None:
+    data = uploaded_bytes
+    uploaded_name = uploaded_name or (uploaded.name if uploaded is not None else "uploaded.pdf")
     try:
         rows, period_date = _parse_cached(data)
     except Exception as e:
@@ -605,39 +614,64 @@ if uploaded is not None:
         if auto_sync:
             # Simple meta refresh to reload page every 10s so shared changes are seen
             st.markdown('<meta http-equiv="refresh" content="10">', unsafe_allow_html=True)
-        st.caption("Saat aktif, halaman akan auto-refresh setiap 10 detik untuk menarik perubahan dari Supabase.")
-
-    st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded.name}**")
-
-    reviewer = st.text_input("Nama reviewer (opsional)")
-
-    # Tombol save mengambang (fixed di kanan-bawah; ikut saat scroll)
-    st.markdown(
-        """
-        <div id="float-save" style="
-            position: fixed;
-            right: 16px;
-            bottom: 16px;
-            z-index: 1000;
-            background: #ffffff;
-            border: 1px solid #ddd;
-            border-radius: 12px;
-            padding: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,.08);
-        ">
-        """,
-        unsafe_allow_html=True,
-    )
-    col_float = st.columns([1])[0]
-    with col_float:
-        if st.button("💾 Simpan blok (shared)", key="btn_save_shared", use_container_width=True, type="primary"):
+        st.caption("Saat aktif, halaman akan auto-refresh setiap 10 detik untuk menarik perubahan dari Supabase. File yang di-upload tidak hilang saat refresh.")
+        st.markdown("---")
+        st.markdown("## 💾 Simpan")
+        if st.button("Simpan blok (shared)", key="sb_save_blocks", use_container_width=True, type="primary"):
             try:
-                payload = _compute_rows_to_save(rows, reviewer)
-                upsert_reviews(supabase, per_str_db, uploaded.name, payload)
+                payload = _compute_rows_to_save(rows, st.session_state.get("reviewer"))
+                upsert_reviews(supabase, per_str_db, uploaded_name, payload)
                 st.success(f"Tersimpan {len(payload)} blok reviewed (shared).")
             except Exception as e:
                 st.error(f"Gagal simpan blok: {e}")
-    st.markdown("</div>", unsafe_allow_html=True)
+        if st.button("Simpan rekap harian (Supabase)", key="sb_save_rekap", use_container_width=True):
+            try:
+                # final_text akan dihitung ulang di bawah; untuk sidebar, hitung cepat di sini juga
+                _combined = []
+                _konsul = 0
+                for _rm, _st in st.session_state.per_patient.items():
+                    if _st.get("block") and str(_st.get("visit","")).lower().startswith("kunjungan") and str(_st.get("gigi","")).strip() and (str(_st.get("telp","")).strip() or str(_st.get("operator","")).strip()):
+                        _combined.append(_st["block"])
+                        if re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", _st["block"]):
+                            _konsul += 1
+                _total = len(_combined)
+                _tind = max(_total - _konsul, 0)
+                header_lines = [
+                    "Review jumlah pasien Poli Bedah Mulut dan Maksilofasial RSGMP UNHAS, ",
+                    f"{hari_str}, {per_str_show}",
+                    "",
+                    f"Jumlah pasien     : {_total} Pasien",
+                    f"Tindakan              : {_tind} Pasien",
+                    f"Konsultasi\t      : {_konsul} Pasien",
+                    f"Terjaring GA\t      : xx Pasien",
+                    f"Baksos                 : xx Pasien",
+                    f"VIP                        : -",
+                    "",
+                    "-----------------------------------------------------",
+                    "",
+                    "POLI INTEGRASI",
+                    "",
+                ]
+                _body = "\n\n".join(_combined) if _combined else ""
+                _footer = [
+                    "",
+                    "------------------------------------------------------",
+                    "",
+                    f"{hari_str}, {per_str_show}",
+                    "",
+                    "Chief jaga poli :",
+                    "drg. xx",
+                ]
+                _final_text = "\n".join(header_lines) + _body + ("\n" + "\n".join(_footer))
+                upsert_summary(supabase, per_str_db, _final_text)
+                st.success(f"Rekap {per_str_show} tersimpan & terbagi ke semua user.")
+            except Exception as e:
+                st.error(f"Gagal simpan rekap: {e}")
+
+    st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded_name}**")
+
+    reviewer = st.text_input("Nama reviewer (opsional)")
+    st.session_state["reviewer"] = reviewer
 
     # ===== render blok per pasien
     st.markdown("---")
@@ -770,9 +804,6 @@ if uploaded is not None:
 
         st.markdown("")  # spacer
 
-    # ===== Simpan blok reviewed ke Supabase =====
-    st.info("Gunakan tombol **Simpan blok (shared)** di pojok kanan atas untuk menyimpan perubahan.")
-
     # ===== gabungan + rekap (render sekali di paling bawah) =====
     total_reviewed = len(combined_blocks)
     tindakan_count = max(total_reviewed - konsultasi_count, 0)
@@ -813,26 +844,6 @@ if uploaded is not None:
     if saved_summary:
         final_text = saved_summary
 
-    # (Optional) Handlers for sidebar-triggered saves if needed later
-    if st.session_state.get("do_save_blocks"):
-        try:
-            payload = _compute_rows_to_save(rows, reviewer)
-            upsert_reviews(supabase, per_str_db, uploaded.name, payload)
-            st.success(f"Tersimpan {len(payload)} blok reviewed (shared).")
-        except Exception as e:
-            st.error(f"Gagal simpan blok: {e}")
-        finally:
-            st.session_state.do_save_blocks = False
-
-    if st.session_state.get("do_save_rekap"):
-        try:
-            upsert_summary(supabase, per_str_db, final_text)
-            st.success(f"Rekap {per_str_show} tersimpan & terbagi ke semua user.")
-        except Exception as e:
-            st.error(f"Gagal simpan rekap: {e}")
-        finally:
-            st.session_state.do_save_rekap = False
-
     st.text_area("Teks gabungan", final_text, height=420)
 
     if st.button("💾 Simpan rekap harian (Supabase)", use_container_width=True):
@@ -867,3 +878,51 @@ if uploaded is not None:
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             use_container_width=True
         )
+
+elif uploaded_bytes is None:
+    with st.expander("📅 Lihat data tersimpan berdasarkan tanggal (tanpa upload)", expanded=True):
+        pick_date = st.date_input("Pilih tanggal PERIODE", value=date.today())
+        if st.button("Muat data tersimpan", use_container_width=True):
+            per_date = pick_date
+            hari_str = HARI_ID[per_date.weekday()]
+            per_str_show = per_date.strftime("%d/%m/%Y")
+            per_str_db = per_date.strftime("%Y-%m-%d")
+            supabase = get_supabase()
+            review_map = load_review_map(supabase, per_str_db)
+            blocks = [r.get("block_text","") for r in review_map.values() if (r.get("block_text") or "").strip()]
+            if not blocks:
+                st.warning("Belum ada blok yang tersimpan untuk tanggal ini.")
+            else:
+                st.success(f"Ditemukan {len(blocks)} blok tersimpan untuk {per_str_show}.")
+                body_text = "\n\n".join(blocks)
+                header_lines = [
+                    "Review jumlah pasien Poli Bedah Mulut dan Maksilofasial RSGMP UNHAS, ",
+                    f"{hari_str}, {per_str_show}",
+                    "",
+                    f"Jumlah pasien     : {len(blocks)} Pasien",
+                    "Tindakan              : -",
+                    "Konsultasi\t      : -",
+                    "Terjaring GA\t      : xx Pasien",
+                    "Baksos                 : xx Pasien",
+                    "VIP                        : -",
+                    "",
+                    "-----------------------------------------------------",
+                    "",
+                    "POLI INTEGRASI",
+                    "",
+                ]
+                footer_lines = [
+                    "",
+                    "------------------------------------------------------",
+                    "",
+                    f"{hari_str}, {per_str_show}",
+                    "",
+                    "Chief jaga poli :",
+                    "drg. xx",
+                ]
+                final_text = "\n".join(header_lines) + body_text + ("\n" + "\n".join(footer_lines))
+                # Prefill rekap harian kalau ada
+                saved_summary = load_summary(supabase, per_str_db)
+                if saved_summary:
+                    final_text = saved_summary
+                st.text_area("Teks gabungan (tersimpan)", final_text, height=420)
