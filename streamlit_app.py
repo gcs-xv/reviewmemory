@@ -270,7 +270,8 @@ def build_block_with_meta(no, row, visit_key, base_date):
 
     dpjp_full = _fix_drg_lower((row.get("DPJP (auto)") or "").strip())
     telp = (row.get("telp") or "").strip()
-    operator = _operator_prefixed((row.get("operator") or "").strip()) if (row.get("operator") or "").strip() else ""
+    operator_in = str(row.get("operator") or "").strip()
+    operator = _operator_prefixed(operator_in)
 
     L = LABELS
     lines = []
