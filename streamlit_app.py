@@ -947,8 +947,20 @@ if uploaded_bytes is not None:
             # Tambahkan marker agar tidak trigger manual touched pada rerun ini
             state["_just_injected"] = True
 
-        if ta_key not in st.session_state:
-            if saved_text:
+saved_text = ""
+if ta_key not in st.session_state:
+    if saved:
+        saved_text = (saved.get("block_text") or "").strip()
+    if saved_text:
+        # init dari DB -> anggap manual (jangan overwrite pas form berubah)
+        st.session_state[ta_key] = saved_text
+        state["manually_touched"] = True
+        state["last_auto_block"] = None
+    else:
+        # init dari auto template
+        st.session_state[ta_key] = default_block
+        state["manually_touched"] = False
+        state["last_auto_block"] = default_block
                 # init dari DB -> anggap manual (jangan overwrite pas form berubah)
                 st.session_state[ta_key] = saved_text
                 state["manually_touched"] = True
