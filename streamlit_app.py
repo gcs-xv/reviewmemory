@@ -816,30 +816,6 @@ if uploaded_bytes is not None:
         unsafe_allow_html=True
     )
 
-    # === Right-side jump panel (sticky) ===
-    jump_nums = [str(it["no"]) for it in not_reviewed_list]
-    right_panel = st.container()
-    with right_panel:
-        cols = st.columns([5,1], gap="large")
-        with cols[1]:
-            st.markdown(
-                "<div style='position:sticky; top:88px; border:1px solid #ddd; border-radius:10px; padding:10px; background:#fafafa'>"
-                "<div style='font-weight:700; margin-bottom:8px;'>⏭️ Lompat ke nomor</div>",
-                unsafe_allow_html=True
-            )
-            if not jump_nums:
-                st.caption("Tidak ada yang tersisa 🎉")
-            else:
-                row_size = 4
-                for i in range(0, len(jump_nums), row_size):
-                    row_cols = st.columns(row_size, gap="small")
-                    for j, num in enumerate(jump_nums[i:i+row_size]):
-                        with row_cols[j]:
-                            if st.button(num, key=f"jumpnum_right_{num}", use_container_width=True):
-                                target = st.session_state.get("__section_ids_no", {}).get(num, f"sec_no_{num}")
-                                st.session_state['scroll_to'] = target
-                                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
 
     reviewer = st.text_input("Nama reviewer (opsional)") or ""
     st.session_state["reviewer"] = reviewer
@@ -883,11 +859,6 @@ if uploaded_bytes is not None:
         state.setdefault("manually_touched", False)
 
         # Anchor id untuk fitur "jump" (RM and running number)
-        st.markdown(
-            f"<div id='{st.session_state['__section_ids'].get(rm, f'sec_{rm}')}'></div>"
-            f"<div id='sec_no_{state['no']}'></div>",
-            unsafe_allow_html=True
-        )
 
         # Prefill / overwrite dari Supabase jika ada pembaruan, kecuali user sudah mengedit manual
         saved = review_map.get(rm)
@@ -935,7 +906,7 @@ if uploaded_bytes is not None:
         )
 
         # input mini, with clear button at end (now after header)
-        v1, v2, v3, v4, v5 = st.columns([1,1,1,1,0.6])
+        v1, v2, v3, v4 = st.columns([1,1,1,1])
         with v1:
             v_in = st.text_input("Kunjungan", value=state.get("visit",""), key=f"visit_{patient_key}")
             state["visit"] = normalize_visit(v_in)
@@ -948,36 +919,6 @@ if uploaded_bytes is not None:
         with v4:
             o_in = st.text_input("Operator", value=state.get("operator",""), key=f"opr_{patient_key}")
             state["operator"] = o_in
-        with v5:
-            clear_clicked = st.button("Hapus", key=f"clear_{patient_key}", help="Kosongkan data & blok pasien ini", use_container_width=True)
-            if clear_clicked:
-                state["visit"] = "(Pilih)"
-                state["gigi"] = ""
-                state["telp"] = ""
-                state["operator"] = ""
-                state["block"] = ""
-                state["manually_touched"] = False
-                state["last_sig"] = None
-                try:
-                    upsert_reviews(
-                        supabase,
-                        per_str_db,
-                        uploaded_name,
-                        [{
-                            "rm": rm,
-                            "checked": False,
-                            "reviewed_by": (st.session_state.get("reviewer") or None),
-                            "block_text": "",
-                            "visit": "",
-                            "gigi": "",
-                            "telp": "",
-                            "operator": "",
-                        }]
-                    )
-                    st.info("Blok dihapus & disinkronkan.")
-                except Exception as e:
-                    st.warning(f"Gagal menghapus blok: {e}")
-                st.rerun()
 
         # Recompute reviewed status AFTER inputs, then open wrapper and render preview
         auto_ok = (
@@ -1018,8 +959,10 @@ if uploaded_bytes is not None:
         # Selalu sinkronkan preview jika user belum mengedit manual
         if state.get("block") is None:
             state["block"] = default_block
-        elif (state.get("last_sig") != current_sig) and (not state.get("manually_touched", False)):
+        elif state.get("last_sig") != current_sig:
+            # Input form changed → always rebuild preview and reset manual flag
             state["block"] = default_block
+            state["manually_touched"] = False
 
         # render textarea dan deteksi apakah user benar2 mengedit manual
         old_text = state["block"]
@@ -1063,22 +1006,6 @@ if uploaded_bytes is not None:
         st.markdown("")  # spacer
 
     # ---- Handle jump-to (scroll) after rendering blocks ----
-    _target_id = st.session_state.get('scroll_to')
-    if _target_id:
-        components.html(
-            f"""
-            <script>
-            (function(){{
-                var el = document.getElementById("{_target_id}");
-                if (el) {{
-                    el.scrollIntoView({{behavior: 'smooth', block: 'start'}});
-                }}
-            }})();
-            </script>
-            """,
-            height=0,
-        )
-        st.session_state['scroll_to'] = None
 
     # ===== gabungan + rekap (render sekali di paling bawah) =====
     total_reviewed = len(combined_blocks)
