@@ -610,7 +610,7 @@ if uploaded_bytes is not None:
     # ===== Sidebar actions (no auto-refresh) =====
     with st.sidebar:
         st.markdown("## ⚙️ Aksi")
-        st.caption("Ingat: setelah mengisi, **klik Simpan**. Untuk menarik perubahan dari teman, klik **Update**.")
+        st.caption("🔄 Perubahan disimpan otomatis. Tombol di bawah hanya cadangan bila koneksi bermasalah.")
 
         if st.button("🔄 Update (ambil dari Supabase)", key="sb_pull", use_container_width=True):
             try:
@@ -688,7 +688,6 @@ if uploaded_bytes is not None:
                 st.error(f"Gagal simpan: {e}")
 
     st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded_name}**")
-    st.info("✅ Setelah isi **Kunjungan/Gigi/Telp/Operator**, klik **Simpan (blok & rekap)** di sidebar. Untuk melihat perubahan dari rekan, klik **Update** di sidebar.")
 
     reviewer = st.text_input("Nama reviewer (opsional)") or ""
     st.session_state["reviewer"] = reviewer
@@ -815,6 +814,23 @@ if uploaded_bytes is not None:
 
         state["manually_touched"] = (edited_text != old_text)
         state["block"] = edited_text
+
+        # --- Auto-save & auto-update setiap kali field berubah ---
+        changed = state["manually_touched"] or (state["last_sig"] != current_sig)
+        if changed:
+            try:
+                payload = _compute_rows_to_save(rows, st.session_state.get("reviewer"))
+                upsert_reviews(supabase, per_str_db, uploaded_name, payload)
+                # build summary text dari blok-blok yang reviewed saat ini
+                _combined = []
+                for _rm, _st in st.session_state.per_patient.items():
+                    if _st.get("block") and str(_st.get("visit","")).lower().startswith("kunjungan") and str(_st.get("gigi","")).strip() and (str(_st.get("telp","")).strip() or str(_st.get("operator","")).strip()):
+                        _combined.append(_st["block"])
+                summary_text = "\n\n".join(_combined)
+                upsert_summary(supabase, per_str_db, summary_text)
+            except Exception as e:
+                st.warning(f"Gagal auto-save: {e}")
+
         state["last_sig"] = current_sig
 
         # akumulasi gabungan & hitung konsultasi
