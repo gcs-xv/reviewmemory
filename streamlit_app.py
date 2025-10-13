@@ -961,27 +961,34 @@ if uploaded_bytes is not None:
 
         # Inisialisasi pertama atau reset jika form berubah:
         if ta_key not in st.session_state:
+            # pertama kali render → isi dengan default hasil builder
             st.session_state[ta_key] = default_block
         elif state.get("last_sig") != current_sig:
-            # Input form berubah → paksa preview ikut default terbaru
-            st.session_state[ta_key] = default_block
-            state["manually_touched"] = False
+            # form berubah → update preview HANYA jika user belum mengedit manual
+            if not state.get("manually_touched", False):
+                st.session_state[ta_key] = default_block
+            # kalau sudah manual_touched, jangan timpa
 
-        # Render textarea TANPA value=..., cukup pakai key
+        # Render textarea TANPA value=..., cukup pakai key (ambil dari session_state)
         edited_text = st.text_area(
             "Blok preview (boleh revisi manual)",
             key=ta_key,
             height=220,
         )
+
+        # Jika pengguna mengedit berbeda dari default builder, tandai sebagai manual
+        if edited_text != default_block:
+            state["manually_touched"] = True
         st.markdown("</div>", unsafe_allow_html=True)
 
         # --- Deteksi perubahan & Auto-save ---
         prev_text = state.get("prev_block", "")
         prev_sig  = state.get("prev_sig")
 
+        # Perubahan dianggap terjadi jika isi block beda atau signature form beda
         changed = (edited_text != prev_text) or (current_sig != prev_sig)
 
-        # Simpan ke state
+        # Simpan ke state saat ini
         state["block"]      = edited_text
         state["prev_block"] = edited_text
         state["prev_sig"]   = current_sig
