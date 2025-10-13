@@ -667,6 +667,16 @@ if uploaded_bytes is not None:
     # simpan anchor map ke session untuk dipakai di loop pasien
     st.session_state["__section_ids"] = section_ids
 
+    # also map by running number for jump-by-number
+    section_ids_no = {}
+    for item in (not_reviewed_list + reviewed_list):
+        section_ids_no[str(item["no"])] = f"sec_no_{item['no']}"
+    # ensure every row has an anchor even if already reviewed
+    for _, rr in df_all.iterrows():
+        n = int(rr["No."])
+        section_ids_no.setdefault(str(n), f"sec_no_{n}")
+    st.session_state["__section_ids_no"] = section_ids_no
+
     # ===== Sidebar actions (no auto-refresh) =====
     with st.sidebar:
         st.markdown("## ⚙️ Aksi")
@@ -688,6 +698,25 @@ if uploaded_bytes is not None:
             )
 
         st.caption("🔄 Perubahan disimpan otomatis. Kamu bisa mengaktifkan **Auto-update berkala** di atas. Tombol di bawah hanya cadangan bila koneksi bermasalah.")
+
+        # Always-visible jump panel after auto-update controls and caption
+        st.markdown("### ⏭️ Lompat ke nomor (belum direview)")
+        if not not_reviewed_list:
+            st.caption("Tidak ada yang tersisa 🎉")
+        else:
+            # compact grid of small buttons
+            nums = [str(it["no"]) for it in not_reviewed_list]
+            # render in rows of 10 small buttons
+            row_size = 10
+            for i in range(0, len(nums), row_size):
+                cols = st.columns(row_size, gap="small")
+                for j, num in enumerate(nums[i:i+row_size]):
+                    with cols[j]:
+                        if st.button(num, key=f"jumpnum_{num}", help=f"Lompat ke nomor {num}", use_container_width=True):
+                            target = st.session_state.get("__section_ids_no", {}).get(num, f"sec_no_{num}")
+                            st.session_state['scroll_to'] = target
+                            st.session_state['__scroll_ts'] = time.time()
+                            st.rerun()
 
         if st.button("🔄 Update (ambil dari Supabase)", key="sb_pull", use_container_width=True):
             try:
@@ -792,17 +821,6 @@ if uploaded_bytes is not None:
                 lines.append(f"{item['no']} {item['rm']} {item['name'].upper()}")
             st.code("\n".join(lines), language="text")
 
-            # Tombol jump ke tiap pasien (ala ujian)
-            st.markdown("#### Lompat ke nomor:")
-            jump_cols = st.columns(4)
-            for idx, item in enumerate(not_reviewed_list):
-                col = jump_cols[idx % 4]
-                with col:
-                    if st.button(f"{item['no']}", key=f"jump_to_{item['rm']}"):
-                        st.session_state['scroll_to'] = st.session_state["__section_ids"].get(item['rm'], f"sec_{item['rm']}")
-                        st.session_state['__scroll_ts'] = time.time()
-                        st.rerun()
-
     st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded_name}**")
 
     # --- Big, non-modal reminder to Update first ---
@@ -860,8 +878,12 @@ if uploaded_bytes is not None:
         state.setdefault("last_sig", None)
         state.setdefault("manually_touched", False)
 
-        # Anchor id untuk fitur "jump"
-        st.markdown(f"<div id='{st.session_state['__section_ids'].get(rm, f'sec_{rm}')}'></div>", unsafe_allow_html=True)
+        # Anchor id untuk fitur "jump" (RM and running number)
+        st.markdown(
+            f"<div id='{st.session_state['__section_ids'].get(rm, f'sec_{rm}')}'></div>"
+            f"<div id='sec_no_{state['no']}'></div>",
+            unsafe_allow_html=True
+        )
 
         # Prefill / overwrite dari Supabase jika ada pembaruan, kecuali user sudah mengedit manual
         saved = review_map.get(rm)
@@ -887,8 +909,8 @@ if uploaded_bytes is not None:
                     state["block"] = saved["block_text"]
                 state["db_updated_at"] = db_ts
 
-        # input mini
-        v1, v2, v3, v4 = st.columns(4)
+        # input mini, with clear button at end
+        v1, v2, v3, v4, v5 = st.columns([1,1,1,1,0.6])
         with v1:
             v_in = st.text_input("Kunjungan", value=state.get("visit",""), key=f"visit_{patient_key}")
             state["visit"] = normalize_visit(v_in)
@@ -901,6 +923,34 @@ if uploaded_bytes is not None:
         with v4:
             o_in = st.text_input("Operator", value=state.get("operator",""), key=f"opr_{patient_key}")
             state["operator"] = o_in
+        with v5:
+            clear_clicked = st.button("Hapus", key=f"clear_{patient_key}", help="Kosongkan data & blok pasien ini", use_container_width=True)
+            if clear_clicked:
+                state["visit"] = "(Pilih)"
+                state["gigi"] = ""
+                state["telp"] = ""
+                state["operator"] = ""
+                state["block"] = ""
+                state["manually_touched"] = False
+                state["last_sig"] = None
+                # Upsert only this row so others tidak ikut
+                try:
+                    supabase.table("reviews").upsert({
+                        "periode_date": per_str_db,
+                        "file_name": uploaded_name,
+                        "rm": rm,
+                        "checked": False,
+                        "reviewed_by": (st.session_state.get("reviewer") or None),
+                        "block_text": "",
+                        "visit": "",
+                        "gigi": "",
+                        "telp": "",
+                        "operator": "",
+                    }, on_conflict="periode_date,rm").execute()
+                    st.info("Blok dihapus & disinkronkan.")
+                except Exception as e:
+                    st.warning(f"Gagal menghapus blok: {e}")
+                st.rerun()
 
         # Recompute reviewed status AFTER inputs, then open wrapper and render header
         auto_ok = (
@@ -912,57 +962,17 @@ if uploaded_bytes is not None:
         st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
         st.markdown(
             f"""
-            <div style="
-                padding:10px 12px;
-                border-radius:8px;
-                background:#F8FAFF;
-                border:1px solid #D6E4FF;
-                margin-bottom:8px;
-            ">
-              <div style="font-weight:800;font-size:1.05rem;color:#1A237E;">{r['Nama']}</div>
-              <div style="color:#3949AB;margin-top:2px;">RM {fmt_rm(rm)}</div>
-              <div style="color:#5C6BC0;">Tgl lahir: {r['Tgl Lahir']} • DPJP: {r['DPJP (auto)']}</div>
+            <div style="margin-bottom:8px;">
+              <div style="font-weight:900;font-size:1.15rem;color:#0D47A1;letter-spacing:.2px;">
+                {state['no']}. {r['Nama'].upper()}
+              </div>
+              <div style="color:#37474F;margin-top:2px;font-size:0.95rem;">
+                RM {fmt_rm(rm)} • Tgl lahir: {r['Tgl Lahir']} • DPJP: {r['DPJP (auto)']}
+              </div>
             </div>
             """,
             unsafe_allow_html=True
         )
-
-        # Small action row (right-aligned): Clear this block
-        action_cols = st.columns([1,1,6])
-        with action_cols[2]:
-            pass  # spacer
-        with action_cols[1]:
-            clear_clicked = st.button("🧹 Hapus blok ini", key=f"clear_{patient_key}", help="Kosongkan data kunjungan & hapus blok review (otomatis tersimpan).")
-        with action_cols[0]:
-            pass  # spacer
-
-        if clear_clicked:
-            # Reset input fields so the section hides on next rerun
-            state["visit"] = "(Pilih)"
-            state["gigi"] = ""
-            state["telp"] = ""
-            state["operator"] = ""
-            state["block"] = ""
-            state["manually_touched"] = False
-            state["last_sig"] = None
-            # Upsert a cleared record to Supabase so it disappears for all users too
-            try:
-                supabase.table("reviews").upsert({
-                    "periode_date": per_str_db,
-                    "file_name": uploaded_name,
-                    "rm": rm,
-                    "checked": False,
-                    "reviewed_by": (st.session_state.get("reviewer") or None),
-                    "block_text": "",
-                    "visit": "",
-                    "gigi": "",
-                    "telp": "",
-                    "operator": "",
-                }, on_conflict="periode_date,rm").execute()
-                st.info("Blok dihapus & disinkronkan.")
-            except Exception as e:
-                st.warning(f"Gagal menghapus blok: {e}")
-            st.rerun()
 
         # jika belum lengkap: tutup wrapper & lanjut pasien berikutnya (tidak render textarea)
         if not auto_ok:
