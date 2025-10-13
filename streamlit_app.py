@@ -965,7 +965,7 @@ if ta_key not in st.session_state:
         st.session_state[ta_key] = saved_text
         state["manually_touched"] = True
         state["last_auto_block"] = None
-    else:
+    	else:
         # init dari auto template
         st.session_state[ta_key] = default_block
         state["manually_touched"] = False
