@@ -650,7 +650,7 @@ if uploaded_bytes is not None:
                     pulled += 1
 
                 st.success(f"Update selesai. {pulled} pasien disinkron dari Supabase.")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(f"Gagal update dari Supabase: {e}")
 
@@ -936,7 +936,7 @@ elif uploaded_bytes is None:
         pick_date = st.date_input("Pilih tanggal PERIODE", value=date.today())
         if st.button("🔄 Update dari Supabase", use_container_width=True):
             # trigger a no-op rerun; the user will click 'Muat data tersimpan' di bawah untuk menampilkan
-            st.experimental_rerun()
+            st.rerun()
         if st.button("Muat data tersimpan", use_container_width=True):
             per_date = pick_date
             hari_str = HARI_ID[per_date.weekday()]
