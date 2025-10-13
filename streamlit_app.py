@@ -1,4 +1,3 @@
-# streamlit_app.py
 import io
 import re
 from datetime import date, timedelta
@@ -115,8 +114,7 @@ def extract_period_date_from_text(text: str):
 def replace_gigi(text: str, gigi: str | None) -> str:
     if not (gigi and str(gigi).strip()): return text
     gigi_val = str(gigi).strip()
-    # Hindari PatternError: gunakan lambda agar \1 tidak bentrok dengan angka gigi
-    return re.sub(r"(?i)(\bgigi\s*)xx\b", lambda m: m.group(1) + gigi_val, text)
+    return re.sub(r"(?i)(\\bgigi\\s*)xx\\b", lambda m: m.group(1) + gigi_val, text)
 
 def is_impaksi_tooth(gigi: str | None) -> bool:
     if not gigi: return False
@@ -167,7 +165,7 @@ def compute_kontrol_text(kontrol_tpl: str, diagnosa_text: str, base_date):
         return f"{kontrol_tpl} ({date_str})"
 
 # =========================================================
-# Template dasar (dipakai fallback)
+# Template dasar (fallback)
 # =========================================================
 B = "•⁠  ⁠"
 LABELS = {
@@ -184,20 +182,19 @@ LABELS = {
 
 VISIT_TEMPLATES = {
     "(Pilih)": dict(diagnosa="", tindakan=[], kontrol=""),
+    # Kunjungan 1: diagnosa kosong; tindakan konsultasi + x-ray; kontrol H+7 dari HARI INI (di builder)
     "Kunjungan 1": dict(
-        diagnosa="",  # sesuai instruksi: kosong
+        diagnosa="",
         tindakan=[
             "Konsultasi",
             "Periapikal X-ray gigi xx / OPG X-Ray",
         ],
-        kontrol="Pro ekstraksi gigi xx dalam lokal anestesi / Pro odontektomi gigi xx dalam lokal anestesi (xx/04/2025)",  # akan diubah jadi H+7
+        kontrol="Pro ekstraksi gigi xx dalam lokal anestesi / Pro odontektomi gigi xx dalam lokal anestesi (xx/04/2025)",
     ),
     "Kunjungan 2": dict(
         diagnosa="Impaksi gigi xx kelas xx posisi xx Mesioangular / Gangren pulpa gigi xx / Gangren radiks gigi xx",
         tindakan=[
             "Odontektomi gigi xx dalam lokal anestesi",
-            # "ekstraksi gigi xx dengan penyulit dalam lokal anestesi",   # dihapus
-            # "ekstraksi gigi xx dengan open methode dalam lokal anestesi",
             "Ekstraksi gigi xx dalam lokal anestesi",
         ],
         kontrol="POD IV (xx/04/2025)",
@@ -233,6 +230,15 @@ def normalize_visit(text: str) -> str:
 # =========================================================
 # Block Builder — logika baru impaksi / non-impaksi
 # =========================================================
+
+def _operator_prefixed(op_name: str) -> str:
+    s = (op_name or "").strip()
+    if not s: return ""
+    if re.match(r"(?i)\s*(dr\.?\s*)?drg\.", s) or re.match(r"(?i)^dr\.", s):
+        return _fix_drg_lower(s)
+    return f"drg. {s}"  # auto-prefix
+
+
 def build_block_with_meta(no, row, visit_key, base_date):
     """
     Kunjungan 1:
@@ -257,10 +263,16 @@ def build_block_with_meta(no, row, visit_key, base_date):
 
     dpjp_full = _fix_drg_lower((row.get("DPJP (auto)") or "").strip())
     telp = (row.get("telp") or "").strip()
-    operator = (row.get("operator") or "").strip()
+    operator_in = (row.get("operator") or "").strip()
+    operator = _operator_prefixed(operator_in) if operator_in else ""
 
     L = LABELS
     lines = []
+
+    # Tambahkan judul Kunjungan X di atas nomor
+    if tpl_key.lower().startswith("kunjungan"):
+        lines.append(tpl_key)
+
     lines.append(f"{no}. {L['nama']}{row['Nama']}")
     lines.append(f"{L['tgl']}{row['Tgl Lahir']}")
     lines.append(f"{L['rm']}{fmt_rm(row['No. RM'])}")
@@ -276,7 +288,6 @@ def build_block_with_meta(no, row, visit_key, base_date):
             f"Periapikal X-ray gigi {tooth} / OPG X-Ray",
         ]
         hplus = (date.today() + timedelta(days=7)).strftime("%d/%m/%Y")
-        # gunakan kata kerja kecil pada 'pro ekstraksi/odontektomi' sesuai contoh kamu
         op_lower = "odontektomi" if imp else "ekstraksi"
         kontrol_txt = f"Pro {op_lower} gigi {tooth} dalam lokal anestesi ({hplus})"
 
@@ -305,7 +316,6 @@ def build_block_with_meta(no, row, visit_key, base_date):
         kontrol_txt = "-"
 
     else:
-        # fallback: pakai template dasar + filter
         tpl = VISIT_TEMPLATES.get(tpl_key, VISIT_TEMPLATES["(Pilih)"])
         diagnosa = replace_gigi(tpl["diagnosa"], tooth)
         tlist = [replace_gigi(t, tooth) for t in tpl["tindakan"]]
@@ -336,6 +346,7 @@ def build_block_with_meta(no, row, visit_key, base_date):
 # =========================================================
 # Parser PDF (tetap)
 # =========================================================
+
 def parse_pdf_to_rows_and_period_bytes(pdf_bytes: bytes):
     rows = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -415,8 +426,9 @@ def parse_pdf_to_rows_and_period_bytes(pdf_bytes: bytes):
     return out, period_date
 
 # =========================================================
-# UI — Per Pasien Block + Editor + Highlight Hijau
+# UI — Per Pasien Block + Auto-Green "Reviewed"
 # =========================================================
+
 st.title("🦷 Review Pasien — Per Pasien Block")
 st.caption("Parsing PDF → blok per pasien (editable) → gabungan (format beku). Sinkronisasi lintas user: next step (Supabase).")
 
@@ -434,7 +446,7 @@ uploaded = st.file_uploader("Upload PDF laporan", type=["pdf"])
 def _parse_cached(pdf_bytes: bytes):
     return parse_pdf_to_rows_and_period_bytes(pdf_bytes)
 
-# state: per pasien (RM) simpan reviewed + teks editor
+# state per pasien: blok + manual flag + last signature input → supaya auto-update saat ubah kunjungan/gigi/telp/operator
 if "per_patient" not in st.session_state:
     st.session_state.per_patient = {}  # rm -> dict(state)
 
@@ -458,13 +470,6 @@ if uploaded is not None:
 
     reviewer = st.text_input("Nama reviewer (opsional)")
 
-    st.markdown("#### Opsi umum")
-    colSa, colSb = st.columns([1,2])
-    with colSa:
-        select_all = st.checkbox("Centang semua sebagai reviewed")
-    with colSb:
-        st.info("Centang ini hanya mengubah status ‘reviewed’. Edit teks tetap bisa di tiap blok pasien.")
-
     # ===== render blok per pasien
     st.markdown("---")
     st.markdown("### Blok per pasien (editable)")
@@ -472,23 +477,20 @@ if uploaded is not None:
     combined_blocks = []
     konsultasi_count = 0
 
-    # simple styles for green background
     GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
     GRAY  = "background-color:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px"
 
-    # urutkan by No.
     df = pd.DataFrame(rows).sort_values("No.")
     for _, r in df.iterrows():
         rm = str(r["No. RM"])
-        # init state default (sekali)
         st.session_state.per_patient.setdefault(rm, {
-            "reviewed": False,
             "visit": r["visit"],
             "gigi": r["gigi"],
             "telp": r["telp"],
             "operator": r["operator"],
-            "block": None,          # text block terakhir
-            "manually_edited": False,
+            "block": None,              # isi editor
+            "manually_edited": False,   # True hanya jika user ubah textarea
+            "last_sig": None,           # (visit,gigi,telp,operator)
             "name": r["Nama"],
             "dob": r["Tgl Lahir"],
             "dpjp_auto": r["DPJP (auto)"],
@@ -497,19 +499,14 @@ if uploaded is not None:
 
         state = st.session_state.per_patient[rm]
 
-        # override reviewed bila select_all dicentang
-        if select_all:
-            state["reviewed"] = True
-
-        # kolom kecil buat input field yang dipakai build
         with st.container():
-            # header + status
-            left, right = st.columns([6, 1])
+            left, right = st.columns([6, 2])
             with left:
                 st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
                 st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
             with right:
-                state["reviewed"] = st.checkbox("Reviewed", value=state["reviewed"], key=f"rev_{rm}")
+                # indikator otomatis (tanpa checkbox): hijau jika dianggap "reviewed"
+                pass
 
             # input mini
             v1, v2, v3, v4 = st.columns(4)
@@ -522,7 +519,7 @@ if uploaded is not None:
             with v4:
                 state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
 
-            # build default block (berdasarkan state terkini)
+            # build default block dari input terkini
             rdict = {
                 "Nama": state["name"],
                 "Tgl Lahir": state["dob"],
@@ -535,14 +532,28 @@ if uploaded is not None:
             }
             default_block, tind_list, konsul_flag = build_block_with_meta(state["no"], rdict, state["visit"], per_date)
 
-            # initial block: kalau belum pernah edit manual → pakai default
-            if state["block"] is None or not state["manually_edited"]:
+            # auto-update blok bila user hanya mengubah input (bukan textarea)
+            current_sig = (state["visit"], state["gigi"], state["telp"], state["operator"]) 
+            if state["block"] is None:
                 state["block"] = default_block
+                state["manually_edited"] = False
+                state["last_sig"] = current_sig
+            else:
+                # jika sebelumnya block == versi default lama (artinya belum ada edit manual), kita boleh timpa
+                if not state["manually_edited"] and state["last_sig"] != current_sig:
+                    state["block"] = default_block
+                    state["last_sig"] = current_sig
 
-            # warna hijau kalau reviewed
-            wrap_style = GREEN if state["reviewed"] else GRAY
+            # aturan reviewed otomatis (tanpa checkbox):
+            reviewed = (
+                state["visit"].lower().startswith("kunjungan") and
+                bool(str(state["gigi"]).strip()) and
+                (bool(str(state["telp"]).strip()) or bool(str(state["operator"]).strip()))
+            )
+            wrap_style = GREEN if reviewed else GRAY
+
             st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
-            state["block"] = st.text_area(
+            edited_text = st.text_area(
                 "Blok preview (boleh revisi manual)",
                 value=state["block"],
                 height=220,
@@ -550,12 +561,11 @@ if uploaded is not None:
             )
             st.markdown("</div>", unsafe_allow_html=True)
 
-            # kalau isinya berubah oleh user → tandai edited
-            if state["block"] != default_block:
-                state["manually_edited"] = True
+            # deteksi edit manual: beda dari default_block = user mengetik
+            state["manually_edited"] = (edited_text != default_block)
+            state["block"] = edited_text
 
-            # akumulasi untuk combined & hitung konsultasi
-            if state["reviewed"]:
+            if reviewed:
                 combined_blocks.append(state["block"])
                 if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", state["block"]):
                     konsultasi_count += 1
@@ -571,7 +581,7 @@ if uploaded is not None:
 
     header_lines = [
         "Review jumlah pasien Poli Bedah Mulut dan Maksilofasial RSGMP UNHAS, ",
-        f"{hari_str}, {per_str_show}",
+        f"{HARI_ID[per_date.weekday()]}, {per_str_show}",
         "",
         f"Jumlah pasien     : {total_reviewed} Pasien",
         f"Tindakan              : {tindakan_count} Pasien",
@@ -590,7 +600,7 @@ if uploaded is not None:
         "",
         "------------------------------------------------------",
         "",
-        f"{hari_str}, {per_str_show}",
+        f"{HARI_ID[per_date.weekday()]}, {per_str_show}",
         "",
         "Chief jaga poli :",
         "drg. xx",
@@ -599,7 +609,6 @@ if uploaded is not None:
 
     st.text_area("Teks gabungan", final_text, height=420)
 
-    # Download
     colD1, colD2 = st.columns(2)
     with colD1:
         st.download_button(
@@ -610,7 +619,6 @@ if uploaded is not None:
             use_container_width=True
         )
     with colD2:
-        # DOCX monospace agar spasi tetap
         buf = io.BytesIO()
         doc = Document()
         style = doc.styles["Normal"]
