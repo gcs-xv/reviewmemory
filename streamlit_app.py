@@ -9,6 +9,9 @@ import pdfplumber
 from docx import Document
 from supabase import create_client
 
+import time
+import streamlit.components.v1 as components
+
 # =========================================================
 # Page
 # =========================================================
@@ -557,6 +560,12 @@ if "do_save_blocks" not in st.session_state:
 if "do_save_rekap" not in st.session_state:
     st.session_state.do_save_rekap = False
 
+# Persistent defaults for auto-update controls
+if "auto_on" not in st.session_state:
+    st.session_state.auto_on = False
+if "auto_int" not in st.session_state:
+    st.session_state.auto_int = 15
+
 # Helper: Komputasi baris yang akan di-save dari st.session_state
 def _compute_rows_to_save(all_rows, reviewer_name):
     rows_to_save = []
@@ -607,10 +616,79 @@ if uploaded_bytes is not None:
     supabase = get_supabase()
     review_map = load_review_map(supabase, per_str_db)
 
+    # ==== Newer-list detection + precompute "belum direview" & anchors ====
+    df_all = pd.DataFrame(rows).sort_values("No.")
+    current_count = len(df_all)
+
+    # "Newer list" heuristic: jika jumlah RM tersimpan di Supabase > jumlah di file saat ini
+    latest_rms_in_db = set(review_map.keys())
+    latest_count = len(latest_rms_in_db)
+    if latest_count > current_count:
+        st.warning(
+            f"⚠️ Terdeteksi daftar terbaru di tanggal ini ({latest_count} pasien) dibanding file yang kamu upload ({current_count}). "
+            "Gunakan tombol **Update (ambil dari Supabase)** di sidebar atau minta rekan share file terbaru."
+        )
+
+    # Siapkan struktur bantu untuk sidebar: daftar nomor yang belum direview & anchor id per pasien
+    not_reviewed_list = []   # list of dicts: {no, rm, name}
+    reviewed_list = []       # optional insight
+    section_ids = {}         # rm -> "sec_{rm}"
+
+    # fungsi bantu untuk nilai reviewed per baris
+    def _row_is_reviewed(rm_str: str, name: str, no: int) -> bool:
+        # gunakan state saat ini bila ada, fallback ke Supabase
+        st_state = st.session_state.get("per_patient", {}).get(rm_str)
+        if st_state:
+            ok = (
+                str(st_state.get("visit","")).lower().startswith("kunjungan")
+                and str(st_state.get("gigi","")).strip() != ""
+                and (str(st_state.get("telp","")).strip() != "" or str(st_state.get("operator","")).strip() != "")
+                and (str(st_state.get("block","")).strip() != "")
+            )
+            return bool(ok)
+        saved = review_map.get(rm_str)
+        if saved:
+            # dinilai reviewed jika minimal block_text ada & bukan kosong
+            if (saved.get("block_text") or "").strip():
+                return True
+            # atau kalau field2 kunci ada
+            if (saved.get("visit") or "").lower().startswith("kunjungan") and ((saved.get("gigi") or "").strip()) and (((saved.get("telp") or "").strip()) or ((saved.get("operator") or "").strip())):
+                return True
+        return False
+
+    for _, rr in df_all.iterrows():
+        rm_str = str(rr["No. RM"])
+        section_ids[rm_str] = f"sec_{rm_str}"
+        if _row_is_reviewed(rm_str, rr["Nama"], int(rr["No."])):
+            reviewed_list.append({"no": int(rr["No."]), "rm": rm_str, "name": rr["Nama"]})
+        else:
+            not_reviewed_list.append({"no": int(rr["No."]), "rm": rm_str, "name": rr["Nama"]})
+
+    # simpan anchor map ke session untuk dipakai di loop pasien
+    st.session_state["__section_ids"] = section_ids
+
     # ===== Sidebar actions (no auto-refresh) =====
     with st.sidebar:
         st.markdown("## ⚙️ Aksi")
-        st.caption("🔄 Perubahan disimpan otomatis. Tombol di bawah hanya cadangan bila koneksi bermasalah.")
+        # Auto-update controls
+        auto_on = st.checkbox("Auto-update berkala", value=st.session_state.get("auto_on", False), key="auto_on")
+        auto_int = st.number_input("Interval (detik)", min_value=5, max_value=120, value=int(st.session_state.get("auto_int", 15)), key="auto_int", help="Frekuensi ambil data dari Supabase secara otomatis.")
+        st.session_state["auto_int"] = auto_int
+
+        # If enabled, trigger a lightweight rerun every N seconds (does not block UI)
+        if auto_on:
+            components.html(
+                f"""
+                <script>
+                setTimeout(function(){{
+                    parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:rerun'}}, '*');
+                }}, {int(auto_int) * 1000});
+                </script>
+                """,
+                height=0
+            )
+
+        st.caption("🔄 Perubahan disimpan otomatis. Kamu bisa mengaktifkan **Auto-update berkala** di atas. Tombol di bawah hanya cadangan bila koneksi bermasalah.")
 
         if st.button("🔄 Update (ambil dari Supabase)", key="sb_pull", use_container_width=True):
             try:
@@ -703,14 +781,60 @@ if uploaded_bytes is not None:
             except Exception as e:
                 st.error(f"Gagal simpan: {e}")
 
+        st.markdown("---")
+        st.markdown("## 📝 Belum di review")
+
+        if not not_reviewed_list:
+            st.success("Semua pasien sudah direview. Mantap! 🎉")
+        else:
+            # Tampilkan daftar ringkas sesuai format diminta
+            lines = ["Belum di review :"]
+            for item in not_reviewed_list:
+                lines.append(f"{item['no']} {item['rm']} {item['name'].upper()}")
+            st.code("\n".join(lines), language="text")
+
+            # Tombol jump ke tiap pasien (ala ujian)
+            st.markdown("#### Lompat ke nomor:")
+            jump_cols = st.columns(4)
+            for idx, item in enumerate(not_reviewed_list):
+                col = jump_cols[idx % 4]
+                with col:
+                    if st.button(f"{item['no']}", key=f"jump_to_{item['rm']}"):
+                        st.session_state['scroll_to'] = st.session_state["__section_ids"].get(item['rm'], f"sec_{item['rm']}")
+                        st.session_state['__scroll_ts'] = time.time()
+                        st.rerun()
+
     st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded_name}**")
+
+    # --- Big, non-modal reminder to Update first ---
+    st.markdown(
+        """
+        <div style="margin:12px 0;padding:14px 16px;border:2px dashed #1976d2;border-radius:10px;background:#E3F2FD;">
+          <div style="font-size:1.05rem;font-weight:700; color:#0D47A1;">🔔 Ingat:</div>
+          <div style="margin-top:6px; line-height:1.5; color:#0D47A1;">
+            Sebelum input / mengubah review, <b>klik “Update (ambil dari Supabase)”</b> di sidebar agar data terbaru dari rekan muncul dulu. 
+            Setelah mengisi atau menghapus blok, gunakan tombol <b>“Simpan (blok &amp; rekap harian)”</b> atau tunggu auto-save bekerja.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
     reviewer = st.text_input("Nama reviewer (opsional)") or ""
     st.session_state["reviewer"] = reviewer
 
     # ===== render blok per pasien
     st.markdown("---")
+    st.markdown(
+        """
+        <div style="margin:8px 0 0 0;padding:10px 12px;border-left:6px solid #1e88e5;background:#E3F2FD;border-radius:4px;">
+          <b>Tips:</b> Biasakan klik <i>Update</i> dulu sebelum mengisi agar menghindari duplikasi review.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
     st.markdown("### Blok per pasien (editable)")
+    st.caption("Gunakan daftar **Belum di review** di sidebar untuk lompat cepat ke pasien yang belum dikerjakan.")
 
     combined_blocks = []
     konsultasi_count = 0
@@ -736,6 +860,9 @@ if uploaded_bytes is not None:
         patient_key = f"{rm}_{state['no']}"
         state.setdefault("last_sig", None)
         state.setdefault("manually_touched", False)
+
+        # Anchor id untuk fitur "jump"
+        st.markdown(f"<div id='{st.session_state['__section_ids'].get(rm, f'sec_{rm}')}'></div>", unsafe_allow_html=True)
 
         # Prefill / overwrite dari Supabase jika ada pembaruan, kecuali user sudah mengedit manual
         saved = review_map.get(rm)
@@ -784,8 +911,59 @@ if uploaded_bytes is not None:
         )
         wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if auto_ok else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
         st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
-        st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
-        st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
+        st.markdown(
+            f"""
+            <div style="
+                padding:10px 12px;
+                border-radius:8px;
+                background:#F8FAFF;
+                border:1px solid #D6E4FF;
+                margin-bottom:8px;
+            ">
+              <div style="font-weight:800;font-size:1.05rem;color:#1A237E;">{r['Nama']}</div>
+              <div style="color:#3949AB;margin-top:2px;">RM {fmt_rm(rm)}</div>
+              <div style="color:#5C6BC0;">Tgl lahir: {r['Tgl Lahir']} • DPJP: {r['DPJP (auto)']}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Small action row (right-aligned): Clear this block
+        action_cols = st.columns([1,1,6])
+        with action_cols[2]:
+            pass  # spacer
+        with action_cols[1]:
+            clear_clicked = st.button("🧹 Hapus blok ini", key=f"clear_{patient_key}", help="Kosongkan data kunjungan & hapus blok review (otomatis tersimpan).")
+        with action_cols[0]:
+            pass  # spacer
+
+        if clear_clicked:
+            # Reset input fields so the section hides on next rerun
+            state["visit"] = "(Pilih)"
+            state["gigi"] = ""
+            state["telp"] = ""
+            state["operator"] = ""
+            state["block"] = ""
+            state["manually_touched"] = False
+            state["last_sig"] = None
+            # Upsert a cleared record to Supabase so it disappears for all users too
+            try:
+                supabase.table("reviews").upsert({
+                    "periode_date": per_str_db,
+                    "file_name": uploaded_name,
+                    "rm": rm,
+                    "checked": False,
+                    "reviewed_by": (st.session_state.get("reviewer") or None),
+                    "block_text": "",
+                    "visit": "",
+                    "gigi": "",
+                    "telp": "",
+                    "operator": "",
+                }, on_conflict="periode_date,rm").execute()
+                st.info("Blok dihapus & disinkronkan.")
+            except Exception as e:
+                st.warning(f"Gagal menghapus blok: {e}")
+            st.rerun()
 
         # jika belum lengkap: tutup wrapper & lanjut pasien berikutnya (tidak render textarea)
         if not auto_ok:
@@ -832,14 +1010,16 @@ if uploaded_bytes is not None:
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        state["manually_touched"] = (edited_text != old_text)
-        state["block"] = edited_text
-        # perbarui signature terakhir setelah kemungkinan perubahan
-        state["last_sig"] = current_sig
+        # --- Auto-save & auto-update setiap kali ADA perubahan form/textarea ---
+        # Deteksi perubahan dibanding signature lama
         state["manually_touched"] = state.get("manually_touched", False) or (edited_text != old_text)
+        state["block"] = edited_text
 
-        # --- Auto-save & auto-update setiap kali field berubah ---
-        changed = state.get("manually_touched", False) or (state.get("last_sig") != current_sig)
+        sig_before = state.get("last_sig")
+        changed = state["manually_touched"] or (sig_before != current_sig)
+        # Simpan signature terbaru untuk deteksi berikutnya
+        state["last_sig"] = current_sig
+
         if changed:
             try:
                 payload = _compute_rows_to_save(rows, st.session_state.get("reviewer"))
@@ -854,13 +1034,31 @@ if uploaded_bytes is not None:
             except Exception as e:
                 st.warning(f"Gagal auto-save: {e}")
 
-
         # akumulasi gabungan & hitung konsultasi
         combined_blocks.append(state["block"])
         if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", state["block"]):
             konsultasi_count += 1
 
         st.markdown("")  # spacer
+
+    # ---- Handle jump-to (scroll) after rendering blocks ----
+    _target_id = st.session_state.get('scroll_to')
+    if _target_id:
+        components.html(
+            f"""
+            <script>
+            (function(){{
+                var el = document.getElementById("{_target_id}");
+                if (el) {{
+                    el.scrollIntoView({{behavior: 'smooth', block: 'start'}});
+                }}
+            }})();
+            </script>
+            """,
+            height=0,
+        )
+        # clear so it doesn't keep scrolling on next rerun
+        st.session_state['scroll_to'] = None
 
     # ===== gabungan + rekap (render sekali di paling bawah) =====
     total_reviewed = len(combined_blocks)
@@ -931,6 +1129,11 @@ if uploaded_bytes is not None:
             use_container_width=True
         )
 
+    st.markdown(
+        "<div style='margin-top:6px;color:#555'>✅ Setelah mengisi, <b>Simpan (blok &amp; rekap harian)</b> atau biarkan auto-save bekerja. Untuk melihat perubahan rekan, gunakan <b>Update</b> atau aktifkan <b>Auto-update berkala</b>.</div>",
+        unsafe_allow_html=True
+    )
+
 elif uploaded_bytes is None:
     with st.expander("📅 Lihat data tersimpan berdasarkan tanggal (tanpa upload)", expanded=True):
         pick_date = st.date_input("Pilih tanggal PERIODE", value=date.today())
@@ -981,3 +1184,7 @@ elif uploaded_bytes is None:
                 if saved_summary:
                     final_text = saved_summary
                 st.text_area("Teks gabungan (tersimpan)", final_text, height=420)
+                st.markdown(
+                    "<div style='margin-top:6px;color:#555'>✅ Setelah mengisi, <b>Simpan (blok &amp; rekap harian)</b> atau biarkan auto-save bekerja. Untuk melihat perubahan rekan, gunakan <b>Update</b> atau aktifkan <b>Auto-update berkala</b>.</div>",
+                    unsafe_allow_html=True
+                )
