@@ -115,7 +115,7 @@ def replace_gigi(text: str, gigi: str | None) -> str:
     if not (gigi and str(gigi).strip()):
         return text
     gigi_val = str(gigi).strip()
-    # penting: jangan pakai '\\b' di pola; gunakan \b normal dan lambda agar \1 tetap group capture
+    # penting: gunakan \b asli + lambda agar \1 tetap capture group
     return re.sub(r"(?i)(\bgigi\s*)xx\b", lambda m: m.group(1) + gigi_val, text)
     
 # ======= Logika impaksi/odontektomi hanya untuk gigi berakhiran 8 =======
@@ -514,35 +514,39 @@ if uploaded is not None:
     GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
     GRAY  = "background-color:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px"
 
-    for _, r in sel.iterrows():
-        rdict = {
-            "Nama": r["Nama"],
-            "Tgl Lahir": r["Tgl Lahir"],
-            "No. RM": r["No. RM"],
-            "DPJP (auto)": r["DPJP (auto)"],
-            "visit": r["visit"],
-            "gigi": r["gigi"],
-            "telp": r["telp"],
-            "operator": r["operator"],
-        }
-        block, tind_list, konsul_flag = build_block_with_meta(int(r["No."]), rdict, r["visit"], per_date)
+    if not sel.empty:
+        st.markdown("### Blok per pasien (hijau = sudah direview)")
+        GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
+        GRAY  = "background-color:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px"
 
-        # aturan reviewed: ada kunjungan + gigi + (telp atau operator)
-        reviewed = (
-            str(r["visit"]).lower().startswith("kunjungan")
-            and str(r["gigi"]).strip() != ""
-            and (str(r["telp"]).strip() != "" or str(r["operator"]).strip() != "")
-        )
-        wrap = GREEN if reviewed else GRAY
+        for _, r in sel.iterrows():
+            rdict = {
+                "Nama": r["Nama"],
+                "Tgl Lahir": r["Tgl Lahir"],
+                "No. RM": r["No. RM"],
+                "DPJP (auto)": r["DPJP (auto)"],
+                "visit": r["visit"],
+                "gigi": r["gigi"],
+                "telp": r["telp"],
+                "operator": r["operator"],
+            }
+            block, tind_list, konsul_flag = build_block_with_meta(int(r["No."]), rdict, r["visit"], per_date)
 
-        # render blok dengan background
-        st.markdown(f'<div style="{wrap}"><pre style="white-space:pre-wrap">{block}</pre></div>', unsafe_allow_html=True)
-        st.markdown("")
+            # aturan reviewed: ada kunjungan + gigi + (telp atau operator)
+            reviewed = (
+                str(r["visit"]).lower().startswith("kunjungan")
+                and str(r["gigi"]).strip() != ""
+                and (str(r["telp"]).strip() != "" or str(r["operator"]).strip() != "")
+            )
+            wrap = GREEN if reviewed else GRAY
 
-        preview_blocks.append(block)
-        if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", block):
-            konsultasi_count += 1
+            st.markdown(f'<div style="{wrap}"><pre style="white-space:pre-wrap">{block}</pre></div>', unsafe_allow_html=True)
+            st.markdown("")
 
+            preview_blocks.append(block)
+            if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", block):
+                konsultasi_count += 1
+                
     total_reviewed = len(preview_blocks)
     tindakan_count = max(total_reviewed - konsultasi_count, 0)
 
