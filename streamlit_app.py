@@ -648,6 +648,8 @@ if uploaded is not None:
         })
         state = st.session_state.per_patient[rm]
         patient_key = f"{rm}_{state['no']}"
+        state.setdefault("last_sig", None)
+        state.setdefault("manually_touched", False)
 
         # Prefill dari Supabase kalau sudah pernah disimpan
         saved = review_map.get(rm)
@@ -662,19 +664,6 @@ if uploaded is not None:
                 state["block"] = saved["block_text"]
                 state["manually_edited"] = True  # jangan ditimpa builder
 
-        # --- reviewed otomatis bila data lengkap (setelah prefill) ---
-        auto_ok = (
-            str(state["visit"]).lower().startswith("kunjungan")
-            and str(state["gigi"]).strip() != ""
-            and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
-        )
-        wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if auto_ok else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
-        st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
-
-        # header identitas
-        st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
-        st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
-
         # input mini
         v1, v2, v3, v4 = st.columns(4)
         with v1:
@@ -686,13 +675,24 @@ if uploaded is not None:
         with v4:
             state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{patient_key}")
 
-        # kalau belum lengkap: JANGAN render blok sama sekali
+        # Recompute reviewed status AFTER inputs, then open wrapper and render header
+        auto_ok = (
+            str(state["visit"]).lower().startswith("kunjungan")
+            and str(state["gigi"]).strip() != ""
+            and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
+        )
+        wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if auto_ok else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
+        st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
+        st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
+        st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
+
+        # jika belum lengkap: tutup wrapper & lanjut pasien berikutnya (tidak render textarea)
         if not auto_ok:
             st.markdown("</div>", unsafe_allow_html=True)
             st.markdown("")  # spacer
             continue
 
-        # build default block (berdasarkan state terkini)
+        # build default block berdasarkan input TERKINI
         rdict = {
             "Nama": state["name"],
             "Tgl Lahir": state["dob"],
@@ -707,22 +707,33 @@ if uploaded is not None:
             state["no"], rdict, state["visit"], per_date
         )
 
-        # initial block: kalau belum pernah edit manual → pakai default
-        if state["block"] is None or not state["manually_edited"]:
+        # signature input saat ini
+        current_sig = (
+            normalize_visit(state["visit"]),
+            str(state["gigi"]).strip(),
+            str(state["telp"]).strip(),
+            str(state["operator"]).strip(),
+        )
+
+        # set awal atau auto-overwrite bila input berubah dan user belum edit textarea
+        if state["block"] is None:
+            state["block"] = default_block
+        elif (state["last_sig"] != current_sig) and (not state["manually_touched"]):
             state["block"] = default_block
 
-        # render blok dengan background hijau penuh
+        # render textarea dan deteksi apakah user benar2 mengedit manual
+        old_text = state["block"]
         edited_text = st.text_area(
             "Blok preview (boleh revisi manual)",
-            value=state["block"],
+            value=old_text,
             height=220,
             key=f"block_{patient_key}"
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # tandai bila user mengubah isi
-        state["manually_edited"] = (edited_text != default_block)
+        state["manually_touched"] = (edited_text != old_text)
         state["block"] = edited_text
+        state["last_sig"] = current_sig
 
         # akumulasi gabungan & hitung konsultasi
         combined_blocks.append(state["block"])
