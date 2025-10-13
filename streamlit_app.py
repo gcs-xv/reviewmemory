@@ -425,6 +425,13 @@ def build_block_with_meta(no, row, visit_key, base_date):
         tindakan_list = tlist
         kontrol_txt = compute_kontrol_text(kontrol, diagnosa_txt, base_date) if kontrol else ""
 
+    	# Jika gigi tidak diisi → kosongkan bagian terkait gigi,
+    	# tapi blok tetap ditampilkan agar bisa diedit manual.
+    if tooth == "xx":
+        diagnosa_txt = ""
+        tindakan_list = []
+        kontrol_txt = ""
+
     lines.append(f"{L['diag']}{diagnosa_txt}")
 
     # Kunjungan 3: tindakan satu baris tanpa bullet
@@ -575,9 +582,8 @@ def _compute_rows_to_save(all_rows, reviewer_name):
         if not st_state:
             continue
         reviewed_ok = (
-            str(st_state["visit"]).lower().startswith("kunjungan")
-            and str(st_state["gigi"]).strip() != ""
-            and (str(st_state["telp"]).strip() != "" or str(st_state["operator"]).strip() != "")
+    	str(st_state.get("visit","")).lower().startswith("kunjungan")
+    	and (str(st_state.get("telp","")).strip() != "" or str(st_state.get("operator","")).strip() != "")
         )
         if reviewed_ok and (st_state.get("block") or "").strip():
             rows_to_save.append({
@@ -885,12 +891,10 @@ if uploaded_bytes is not None:
                 state["db_updated_at"] = db_ts
 
         # Reorder: header first
-        wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if (
-            str(state["visit"]).lower().startswith("kunjungan")
-            and str(state["gigi"]).strip() != ""
-            and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
-        ) else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"
-        st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
+	wrap_style = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:16px" if (
+    	str(state["visit"]).lower().startswith("kunjungan")
+    	and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
+	) else "background-color:#ffffff;border:1px solid #ddd;border-radius:10px;padding:16px"        st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
         st.markdown(
             f"""
             <div style="margin-bottom:8px;">
@@ -922,9 +926,8 @@ if uploaded_bytes is not None:
 
         # Recompute reviewed status AFTER inputs, then open wrapper and render preview
         auto_ok = (
-            str(state["visit"]).lower().startswith("kunjungan")
-            and str(state["gigi"]).strip() != ""
-            and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
+	str(state["visit"]).lower().startswith("kunjungan")
+    	and (str(state["telp"]).strip() != "" or str(state["operator"]).strip() != "")
         )
 
         # jika belum lengkap: tutup wrapper & lanjut pasien berikutnya (tidak render textarea)
