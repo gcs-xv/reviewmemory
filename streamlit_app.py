@@ -280,15 +280,28 @@ def upsert_reviews(supabase, periode_date: str, file_name: str, rows_to_upsert: 
     supabase.table("reviews").upsert(payload, on_conflict="periode_date,rm").execute()
 
 def load_summary(supabase, periode_date: str) -> str:
-    # butuh table daily_summaries(periode_date date primary key, summary_text text, updated_at timestamptz default now())
+    """
+    Read saved daily summary for a given periode_date.
+    Avoid `.maybe_single()` because some client versions return a plain dict
+    (no `.data` attribute). Use a simple `.execute()` and handle both shapes.
+    """
     res = (
         supabase.table("daily_summaries")
         .select("summary_text")
         .eq("periode_date", periode_date)
-        .maybe_single()
+        .limit(1)
         .execute()
     )
-    row = res.data
+    # Support both object-with-.data and dict-with-["data"]
+    rows = None
+    if hasattr(res, "data"):
+        rows = res.data
+    elif isinstance(res, dict):
+        rows = res.get("data")
+    if not rows:
+        return ""
+    # rows expected as a list with at most one row
+    row = rows[0] if isinstance(rows, list) else rows
     return (row or {}).get("summary_text") or ""
 
 def upsert_summary(supabase, periode_date: str, summary_text: str):
