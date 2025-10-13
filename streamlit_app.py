@@ -462,130 +462,102 @@ uploaded = st.file_uploader("Upload PDF laporan", type=["pdf"])
 def _parse_cached(pdf_bytes: bytes):
     return parse_pdf_to_rows_and_period_bytes(pdf_bytes)
 
-# state per pasien: blok + manual flag + last signature input → supaya auto-update saat ubah kunjungan/gigi/telp/operator
+# state per pasien
 if "per_patient" not in st.session_state:
-    st.session_state.per_patient = {}  # rm -> dict(state)
+    st.session_state.per_patient = {}  # keyed by RM
 
-if uploaded is not None:
-    data = uploaded.read()
-    try:
-        rows, period_date = _parse_cached(data)
-    except Exception as e:
-        st.error(f"Gagal membaca PDF: {e}")
-        st.stop()
+GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
+GRAY  = "background-color:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px"
 
-    if not rows:
-        st.error("PDF tidak terbaca / pola tidak cocok.")
-        st.stop()
+df = pd.DataFrame(rows).sort_values("No.")
+combined_blocks = []
+konsultasi_count = 0
 
-    per_date = period_date if period_date else date.today()
-    hari_str = HARI_ID[per_date.weekday()]
-    per_str_show = per_date.strftime("%d/%m/%Y")
+for _, r in df.iterrows():
+    rm = str(r["No. RM"])
+    st.session_state.per_patient.setdefault(rm, {
+        "visit": r["visit"],
+        "gigi": r["gigi"],
+        "telp": r["telp"],
+        "operator": r["operator"],
+        "block": None,
+        "manually_edited": False,
+        "last_sig": None,
+        "name": r["Nama"],
+        "dob": r["Tgl Lahir"],
+        "dpjp_auto": r["DPJP (auto)"],
+        "no": int(r["No."]),
+    })
+    state = st.session_state.per_patient[rm]
 
-    st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded.name}**")
+    with st.container():
+        left, right = st.columns([6, 2])
+        with left:
+            st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
+            st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
 
-    reviewer = st.text_input("Nama reviewer (opsional)")
+        # input mini
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{rm}"))
+        with c2:
+            state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{rm}")
+        with c3:
+            state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{rm}")
+        with c4:
+            state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
 
-    # ===== render blok per pasien
-    st.markdown("---")
-    st.markdown("### Blok per pasien (editable)")
+        # build default block dari input terkini
+        rdict = {
+            "Nama": state["name"],
+            "Tgl Lahir": state["dob"],
+            "No. RM": rm,
+            "DPJP (auto)": state["dpjp_auto"],
+            "visit": state["visit"],
+            "gigi": state["gigi"],
+            "telp": state["telp"],
+            "operator": state["operator"],
+        }
+        default_block, tind_list, konsul_flag = build_block_with_meta(
+            state["no"], rdict, state["visit"], base_date=per_date
+        )
 
-    combined_blocks = []
-    konsultasi_count = 0
-
-    GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
-    GRAY  = "background-color:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px"
-
-    df = pd.DataFrame(rows).sort_values("No.")
-    for _, r in df.iterrows():
-        rm = str(r["No. RM"])
-        st.session_state.per_patient.setdefault(rm, {
-            "visit": r["visit"],
-            "gigi": r["gigi"],
-            "telp": r["telp"],
-            "operator": r["operator"],
-            "block": None,              # isi editor
-            "manually_edited": False,   # True hanya jika user ubah textarea
-            "last_sig": None,           # (visit,gigi,telp,operator)
-            "name": r["Nama"],
-            "dob": r["Tgl Lahir"],
-            "dpjp_auto": r["DPJP (auto)"],
-            "no": int(r["No."]),
-        })
-
-        state = st.session_state.per_patient[rm]
-
-        with st.container():
-            left, right = st.columns([6, 2])
-            with left:
-                st.markdown(f"**RM {fmt_rm(rm)} — {r['Nama']}**")
-                st.caption(f"Tgl lahir: {r['Tgl Lahir']} | DPJP (auto): {r['DPJP (auto)']}")
-            with right:
-                # indikator otomatis (tanpa checkbox): hijau jika dianggap "reviewed"
-                pass
-
-            # input mini
-            v1, v2, v3, v4 = st.columns(4)
-            with v1:
-                state["visit"] = normalize_visit(st.text_input("Kunjungan", value=state["visit"], key=f"visit_{rm}"))
-            with v2:
-                state["gigi"] = st.text_input("Gigi", value=state["gigi"], key=f"gigi_{rm}")
-            with v3:
-                state["telp"] = st.text_input("Telp", value=state["telp"], key=f"telp_{rm}")
-            with v4:
-                state["operator"] = st.text_input("Operator", value=state["operator"], key=f"opr_{rm}")
-
-            # build default block dari input terkini
-            rdict = {
-                "Nama": state["name"],
-                "Tgl Lahir": state["dob"],
-                "No. RM": rm,
-                "DPJP (auto)": state["dpjp_auto"],
-                "visit": state["visit"],
-                "gigi": state["gigi"],
-                "telp": state["telp"],
-                "operator": state["operator"],
-            }
-            default_block, tind_list, konsul_flag = build_block_with_meta(state["no"], rdict, state["visit"], per_date)
-
-            # auto-update blok bila user hanya mengubah input (bukan textarea)
-            current_sig = (state["visit"], state["gigi"], state["telp"], state["operator"]) 
-            if state["block"] is None:
+        # auto-update blok bila user hanya mengubah input (bukan textarea)
+        current_sig = (state["visit"], state["gigi"], state["telp"], state["operator"])
+        if state["block"] is None:
+            state["block"] = default_block
+            state["manually_edited"] = False
+            state["last_sig"] = current_sig
+        else:
+            if not state["manually_edited"] and state["last_sig"] != current_sig:
                 state["block"] = default_block
-                state["manually_edited"] = False
                 state["last_sig"] = current_sig
-            else:
-                # jika sebelumnya block == versi default lama (artinya belum ada edit manual), kita boleh timpa
-                if not state["manually_edited"] and state["last_sig"] != current_sig:
-                    state["block"] = default_block
-                    state["last_sig"] = current_sig
 
-            # aturan reviewed otomatis (tanpa checkbox):
-            reviewed = (
-                state["visit"].lower().startswith("kunjungan") and
-                bool(str(state["gigi"]).strip()) and
-                (bool(str(state["telp"]).strip()) or bool(str(state["operator"]).strip()))
-            )
-            wrap_style = GREEN if reviewed else GRAY
+        # reviewed = punya kunjungan + gigi + (telp atau operator)
+        reviewed = (
+            state["visit"].lower().startswith("kunjungan") and
+            bool(str(state["gigi"]).strip()) and
+            (bool(str(state["telp"]).strip()) or bool(str(state["operator"]).strip()))
+        )
+        wrap_style = GREEN if reviewed else GRAY
 
-            st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
-            edited_text = st.text_area(
-                "Blok preview (boleh revisi manual)",
-                value=state["block"],
-                height=220,
-                key=f"block_{rm}"
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown(f'<div style="{wrap_style}">', unsafe_allow_html=True)
+        edited_text = st.text_area(
+            "Blok preview (boleh revisi manual)",
+            value=state["block"],
+            height=220,
+            key=f"block_{rm}"
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
 
-            # deteksi edit manual: beda dari default_block = user mengetik
-            state["manually_edited"] = (edited_text != default_block)
-            state["block"] = edited_text
+        state["manually_edited"] = (edited_text != default_block)
+        state["block"] = edited_text
 
-            if reviewed:
-                combined_blocks.append(state["block"])
-                if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", state["block"]):
-                    konsultasi_count += 1
-
+        if reviewed:
+            combined_blocks.append(state["block"])
+            if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", state["block"]):
+                konsultasi_count += 1
+                
         st.markdown("")  # spacer
 
     # ===== gabungan + rekap
