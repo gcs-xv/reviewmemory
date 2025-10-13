@@ -569,7 +569,7 @@ if uploaded is not None:
             combined_blocks.append(state["block"])
             if konsul_flag or re.search(r"(?i)\bkonsultasi\b|\bkonsul\b", state["block"]):
                 konsultasi_count += 1
-                    st.markdown("")  # spacer
+            st.markdown("")  # spacer
 
     # ===== gabungan + rekap
     total_reviewed = len(combined_blocks)
