@@ -163,11 +163,13 @@ def compute_kontrol_text(kontrol_tpl: str, diagnosa_text: str, base_date):
         offset = 0
     target = base_date + timedelta(days=offset)
 
-    # kalau target POD III jatuh Minggu → geser ke POD IV (senin)
-    if pod_k == 3 and target.weekday() == 6:  # Sunday
-        pod_k = 4
+    # Jika jatuh hari Minggu:
+    # - POD III → geser ke POD IV (H+4)
+    # - POD VII → geser ke POD VIII (H+8)
+    if target.weekday() == 6 and pod_k in (3, 7):
+        new_label = "POD IV" if pod_k == 3 else "POD VIII"
         target = target + timedelta(days=1)
-        kontrol_tpl = re.sub(r"\bPOD\s+[IVXLC]+\b", "POD IV", kontrol_tpl, flags=re.IGNORECASE)
+        kontrol_tpl = re.sub(r"\bPOD\s+[IVXLC]+\b", new_label, kontrol_tpl, flags=re.IGNORECASE)
 
     date_str = target.strftime("%d/%m/%Y")
     if re.search(r"\([^)]*\)", kontrol_tpl):
@@ -397,7 +399,7 @@ def build_block_with_meta(no, row, visit_key, base_date):
         else:
             diagnosa_txt = f"Gangren pulpa gigi {tooth} / Gangren radiks gigi {tooth}"
             tindakan_list = [f"Ekstraksi gigi {tooth} dalam lokal anestesi"]
-        kontrol_txt = compute_kontrol_text("POD IV (xx/04/2025)", diagnosa_txt, base_date)
+        kontrol_txt = compute_kontrol_text("POD III (xx/04/2025)", diagnosa_txt, base_date)
 
     elif tpl_key == "Kunjungan 3":
         diagnosa_txt = f"POD III {op_word} gigi {tooth} dalam lokal anestesi"
@@ -434,8 +436,8 @@ def build_block_with_meta(no, row, visit_key, base_date):
 
     lines.append(f"{L['diag']}{diagnosa_txt}")
 
-    # Kunjungan 3: tindakan satu baris tanpa bullet
-    if tpl_key == "Kunjungan 3" and len(tindakan_list) == 1:
+    # Jika hanya satu tindakan → tampil tanpa bullet; lebih dari satu → pakai bullet
+    if len(tindakan_list) == 1:
         lines.append(f"{L['tind']}{tindakan_list[0]}")
     else:
         lines.append(f"{L['tind']}")
