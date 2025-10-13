@@ -253,62 +253,85 @@ def get_supabase():
     return create_client(url, key)
 
 def load_review_map(supabase, periode_date: str):
-    """Ambil status + block_text per RM untuk tanggal tsb."""
-    res = (
-        supabase.table("reviews")
-        .select("rm, checked, block_text, reviewed_by, updated_at")
-        .eq("periode_date", periode_date)
-        .execute()
-    )
-    data = res.data or []
-    return {row["rm"]: row for row in data}
+    """Ambil semua kolom yang ada (agar aman walau DB belum ditambah kolom baru)."""
+    try:
+        res = (
+            supabase.table("reviews")
+            .select("*")
+            .eq("periode_date", periode_date)
+            .execute()
+        )
+        data = getattr(res, "data", None) or (res.get("data") if isinstance(res, dict) else []) or []
+        # kembalikan dict by RM
+        return {str(row.get("rm")): row for row in data}
+    except Exception:
+        return {}
 
 def upsert_reviews(supabase, periode_date: str, file_name: str, rows_to_upsert: list[dict]):
-    """Simpan status & block_text per RM (upsert by (periode_date, rm))."""
+    """Simpan status & block_text per RM (upsert by (periode_date, rm)).
+
+    Akan mencoba menyimpan kolom lengkap. Jika DB belum punya kolom tsb, fallback ke kolom minimal.
+    """
     if not rows_to_upsert:
         return
-    payload = []
+
+    # payload lengkap
+    full_payload = []
     for r in rows_to_upsert:
-        payload.append({
+        full_payload.append({
             "periode_date": periode_date,
             "file_name": file_name,
             "rm": str(r["rm"]),
             "checked": bool(r.get("checked", True)),
             "reviewed_by": r.get("reviewed_by"),
-            "block_text": r.get("block_text", None),
+            "block_text": r.get("block_text"),
+            "visit": r.get("visit"),
+            "gigi": r.get("gigi"),
+            "telp": r.get("telp"),
+            "operator": r.get("operator"),
         })
-    supabase.table("reviews").upsert(payload, on_conflict="periode_date,rm").execute()
+
+    try:
+        supabase.table("reviews").upsert(full_payload, on_conflict="periode_date,rm").execute()
+        return
+    except Exception:
+        # fallback ke kolom minimal yang pasti ada di skema user
+        minimal_payload = []
+        for r in rows_to_upsert:
+            minimal_payload.append({
+                "periode_date": periode_date,
+                "file_name": file_name,
+                "rm": str(r["rm"]),
+                "checked": bool(r.get("checked", True)),
+                "reviewed_by": r.get("reviewed_by"),
+            })
+        supabase.table("reviews").upsert(minimal_payload, on_conflict="periode_date,rm").execute()
 
 def load_summary(supabase, periode_date: str) -> str:
-    """
-    Read saved daily summary for a given periode_date.
-    Avoid `.maybe_single()` because some client versions return a plain dict
-    (no `.data` attribute). Use a simple `.execute()` and handle both shapes.
-    """
-    res = (
-        supabase.table("daily_summaries")
-        .select("summary_text")
-        .eq("periode_date", periode_date)
-        .limit(1)
-        .execute()
-    )
-    # Support both object-with-.data and dict-with-["data"]
-    rows = None
-    if hasattr(res, "data"):
-        rows = res.data
-    elif isinstance(res, dict):
-        rows = res.get("data")
-    if not rows:
+    try:
+        res = (
+            supabase.table("daily_summaries")
+            .select("summary_text")
+            .eq("periode_date", periode_date)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or (res.get("data") if isinstance(res, dict) else [])
+        if not rows:
+            return ""
+        row = rows[0] if isinstance(rows, list) else rows
+        return (row or {}).get("summary_text") or ""
+    except Exception:
         return ""
-    # rows expected as a list with at most one row
-    row = rows[0] if isinstance(rows, list) else rows
-    return (row or {}).get("summary_text") or ""
 
 def upsert_summary(supabase, periode_date: str, summary_text: str):
-    supabase.table("daily_summaries").upsert(
-        {"periode_date": periode_date, "summary_text": summary_text},
-        on_conflict="periode_date"
-    ).execute()
+    try:
+        supabase.table("daily_summaries").upsert(
+            {"periode_date": periode_date, "summary_text": summary_text},
+            on_conflict="periode_date"
+        ).execute()
+    except Exception:
+        pass
 
 # =========================================================
 # Block Builder — logika baru impaksi / non-impaksi
@@ -518,6 +541,32 @@ uploaded = st.file_uploader("Upload PDF laporan", type=["pdf"])
 def _parse_cached(pdf_bytes: bytes):
     return parse_pdf_to_rows_and_period_bytes(pdf_bytes)
 
+# Helper: Komputasi baris yang akan di-save dari st.session_state
+def _compute_rows_to_save(all_rows, reviewer_name):
+    rows_to_save = []
+    for rr in pd.DataFrame(all_rows).sort_values("No.").to_dict("records"):
+        rm_key = str(rr["No. RM"])
+        st_state = st.session_state.per_patient.get(rm_key)
+        if not st_state:
+            continue
+        reviewed_ok = (
+            str(st_state["visit"]).lower().startswith("kunjungan")
+            and str(st_state["gigi"]).strip() != ""
+            and (str(st_state["telp"]).strip() != "" or str(st_state["operator"]).strip() != "")
+        )
+        if reviewed_ok and (st_state.get("block") or "").strip():
+            rows_to_save.append({
+                "rm": rm_key,
+                "checked": True,
+                "reviewed_by": (reviewer_name or None),
+                "block_text": st_state["block"],
+                "visit": st_state.get("visit"),
+                "gigi": st_state.get("gigi"),
+                "telp": st_state.get("telp"),
+                "operator": st_state.get("operator"),
+            })
+    return rows_to_save
+
 # state: per pasien (RM) simpan reviewed + teks editor
 if "per_patient" not in st.session_state:
     st.session_state.per_patient = {}  # rm -> dict(state)
@@ -544,6 +593,22 @@ if uploaded is not None:
     st.success(f"Ditemukan {len(rows)} pasien — PERIODE: **{per_str_show}** — file: **{uploaded.name}**")
 
     reviewer = st.text_input("Nama reviewer (opsional)")
+
+    # Tombol save "melayang" di kanan atas agar selalu mudah diakses
+    st.markdown(
+        "<div style='position:sticky; top:8px; display:flex; justify-content:flex-end; z-index:999;'>",
+        unsafe_allow_html=True
+    )
+    col_sticky = st.columns([1,1,6])[0]  # kecil di kanan
+    with col_sticky:
+        if st.button("💾 Simpan blok (shared)", use_container_width=True, type="primary"):
+            try:
+                payload = _compute_rows_to_save(rows, reviewer)
+                upsert_reviews(supabase, per_str_db, uploaded.name, payload)
+                st.success(f"Tersimpan {len(payload)} blok reviewed (shared).")
+            except Exception as e:
+                st.error(f"Gagal simpan blok: {e}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # ===== render blok per pasien
     st.markdown("---")
@@ -573,12 +638,18 @@ if uploaded is not None:
 
         # Prefill dari Supabase kalau sudah pernah disimpan
         saved = review_map.get(rm)
-        if saved and (state["block"] is None):
-            if saved.get("block_text"):
+        if saved:
+            # isian form (jika ada di DB)
+            state["visit"] = normalize_visit(saved.get("visit") or state["visit"])
+            state["gigi"] = saved.get("gigi") or state["gigi"]
+            state["telp"] = saved.get("telp") or state["telp"]
+            state["operator"] = saved.get("operator") or state["operator"]
+            # block text (jika ada)
+            if state["block"] is None and saved.get("block_text"):
                 state["block"] = saved["block_text"]
                 state["manually_edited"] = True  # jangan ditimpa builder
 
-        # --- reviewed otomatis bila data lengkap ---
+        # --- reviewed otomatis bila data lengkap (setelah prefill) ---
         auto_ok = (
             str(state["visit"]).lower().startswith("kunjungan")
             and str(state["gigi"]).strip() != ""
@@ -648,37 +719,7 @@ if uploaded is not None:
         st.markdown("")  # spacer
 
     # ===== Simpan blok reviewed ke Supabase =====
-    st.markdown("#### Simpan perubahan (shared)")
-    rows_to_save = []
-
-    # Kumpulkan hanya blok yang tampil (auto_ok)
-    df2 = pd.DataFrame(rows).sort_values("No.")
-    for _, rr in df2.iterrows():
-        rm_key = str(rr["No. RM"])
-        st_state = st.session_state.per_patient.get(rm_key)
-        if not st_state:
-            continue
-        reviewed_ok = (
-            str(st_state["visit"]).lower().startswith("kunjungan")
-            and str(st_state["gigi"]).strip() != ""
-            and (str(st_state["telp"]).strip() != "" or str(st_state["operator"]).strip() != "")
-        )
-        if reviewed_ok and (st_state.get("block") or "").strip():
-            rows_to_save.append({
-                "rm": rm_key,
-                "checked": True,
-                "reviewed_by": (reviewer or None),
-                "block_text": st_state["block"],
-            })
-
-    col_save1, col_save2 = st.columns([1,2])
-    with col_save1:
-        if st.button("💾 Simpan blok reviewed (Supabase)", use_container_width=True, type="primary"):
-            try:
-                upsert_reviews(supabase, per_str_db, uploaded.name, rows_to_save)
-                st.success(f"Tersimpan {len(rows_to_save)} blok reviewed (shared).")
-            except Exception as e:
-                st.error(f"Gagal simpan blok: {e}")
+    st.info("Gunakan tombol **Simpan blok (shared)** di pojok kanan atas untuk menyimpan perubahan.")
 
     # ===== gabungan + rekap (render sekali di paling bawah) =====
     total_reviewed = len(combined_blocks)
