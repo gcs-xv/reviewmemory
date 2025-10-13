@@ -673,7 +673,6 @@ if uploaded_bytes is not None:
         # Auto-update controls
         auto_on = st.checkbox("Auto-update berkala", value=st.session_state.get("auto_on", False), key="auto_on")
         auto_int = st.number_input("Interval (detik)", min_value=5, max_value=120, value=int(st.session_state.get("auto_int", 15)), key="auto_int", help="Frekuensi ambil data dari Supabase secara otomatis.")
-        st.session_state["auto_int"] = auto_int
 
         # If enabled, trigger a lightweight rerun every N seconds (does not block UI)
         if auto_on:
