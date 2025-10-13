@@ -510,11 +510,6 @@ if uploaded is not None:
     konsultasi_count = 0
 
     if not sel.empty:
-    st.markdown("### Blok per pasien (hijau = sudah direview)")
-    GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
-    GRAY  = "background-color:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px"
-
-    if not sel.empty:
         st.markdown("### Blok per pasien (hijau = sudah direview)")
         GREEN = "background-color:#e8f5e9;border:1px solid #2e7d32;border-radius:10px;padding:12px"
         GRAY  = "background-color:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px"
