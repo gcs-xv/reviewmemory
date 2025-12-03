@@ -21,18 +21,18 @@ st.set_page_config(page_title="Review Pasien — Streamlit", page_icon="🦷", l
 # DPJP Canon + Fuzzy Matching (tetap)
 # =========================================================
 DPJP_CANON = [
-    "Dr. drg. Andi Tajrin, M.Kes., Sp.B.M.M., Subsp. C.O.M.(K)",
-    "drg. Mukhtar Nur Anam, Sp.B.M.M.",
-    "drg. Husnul Basyar, Sp. B.M.M.",
-    "drg. Abul Fauzi, Sp.B.M.M., Subsp.T.M.T.M.J.(K)",
-    "drg. M. Irfan Rasul, Ph.D., Sp.B.M.M., Subsp.C.O.M.(K)",
-    "drg. Mohammad Gazali, MARS., Sp.B.M.M., Subsp.T.M.T.M.J.(K)",
-    "drg. Timurwati, Sp.B.M.M.",
-    "drg. Husni Mubarak, Sp. B.M.M.",
-    "drg. Nurwahida, M.K.G., Sp.B.M.M., Subsp.C.O.M(K)",
-    "drg. Hadira, M.K.G., Sp.B.M.M., Subsp.C.O.M(K)",
-    "drg. Carolina Stevanie, Sp.B.M.M.",
-    "drg. Yossy Yoanita Ariestiana, M.KG., Sp.B.M.M., Subsp.Ortognat-D (K)",
+    "Dr. drg. Andi Tajrin, M.Kes., Sp.B.M.Mf., Subsp. C.O.Mf.",
+    "drg. Mukhtar Nur Anam, Sp.B.M.Mf.",
+    "drg. Husnul Basyar, Sp. B.M.Mf.",
+    "drg. Abul Fauzi, Sp.B.M.Mf., Subsp.Tr.Mf.S.Tm.",
+    "drg. M. Irfan Rasul, Ph.D., Sp.B.M.Mf., Subsp.C.O.Mf.",
+    "drg. Mohammad Gazali, MARS., Sp.B.M.Mf., Subsp.Tr.Mf.S.Tm.",
+    "drg. Timurwati, Sp.B.M.Mf.",
+    "drg. Husni Mubarak, Sp. B.M.Mf.",
+    "drg. Nurwahida, M.K.G., Sp.B.M.Mf., Subsp.C.O.Mf.",
+    "drg. Hadira, M.K.G., Sp.B.M.Mf., Subsp.C.O.Mf.",
+    "drg. Carolina Stevanie, Sp.B.M.Mf.",
+    "drg. Yossy Yoanita Ariestiana, M.KG., Sp.B.M.Mf., Subsp.Ortognat.D.",
 ]
 
 STOP_TOKENS = {
